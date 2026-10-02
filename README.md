@@ -373,16 +373,6 @@ This project has not had an independent security review.
 
 The onboard LED blinks on each packet sent or received.
 
-## Repository layout
-
-```
-Johnify/
-├── Johnify.ino   firmware (radio, crypto, HTTP API) and the embedded web app
-└── README.md     this file
-```
-
-Arduino requires the sketch folder name to match the main `.ino` file name, so keep the folder named `Johnify`.
-
 ## Testing status
 
 Beta: V.0.1.1
