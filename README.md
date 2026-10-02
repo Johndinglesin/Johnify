@@ -338,8 +338,6 @@ Other limits:
 - Message ordering across boards is by arrival, not by a shared clock.
 - No delivery guarantee. Broadcast is best-effort; double-sending reduces but does not eliminate loss.
 
-## Security model
-
 ### What is protected
 
 - **Confidentiality of name and text** against anyone who does not have the chat code.
@@ -387,8 +385,4 @@ Arduino requires the sketch folder name to match the main `.ino` file name, so k
 
 ## Testing status
 
-Add your own notes here: board revision, core version, number of boards, measured range, and anything you changed.
-
-## License
-
-Choose a license and add a `LICENSE` file.
+Beta: V.0.1.1
