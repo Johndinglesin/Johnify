@@ -1,25 +1,4 @@
-/*
-  Johnify
-  A group chat that works with no internet, no router and no cell signal.
-  Runs on ESP32 boards (written for the Seeed XIAO ESP32S3).
 
-  How it works, in short:
-
-    1. Each board creates its own Wi-Fi network. You join it with your phone
-       and open a web page that the board serves (http://192.168.4.1).
-    2. When you send a message, your phone gives it to the board. The board
-       encrypts it and broadcasts it by radio using ESP-NOW, a protocol that
-       is built into the ESP32 and lets boards talk directly to each other.
-    3. Every board is always listening. A board that knows the chat code can
-       decrypt the message and hand it to the phones connected to it.
-    4. A board can be switched to "repeater" mode. It then re-broadcasts what
-       it hears so messages can reach further.
-
-  Everything is in this one file: the firmware and the web page it serves.
-
-  Board package: "esp32" by Espressif (version 3.x, 2.x also works).
-  No extra libraries are needed.
-*/
 
 #include <WiFi.h>
 #include <WebServer.h>
