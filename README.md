@@ -24,7 +24,6 @@ Written for the Seeed Studio **XIAO ESP32S3**. It should work on other ESP32-fam
 - [Memory and limits](#memory-and-limits)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
-- [Repository layout](#repository-layout)
 
 ---
 
