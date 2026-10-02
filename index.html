@@ -3,7 +3,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <meta name="theme-color" content="#1f8a70">
-<title>Johnify</title>
+<title>Johnify Demo</title>
 <style>
 :root{
   --bg:#f1f4f2;--sf:#ffffff;--tx:#16201c;--mu:#66756f;--ln:#e0e7e3;
@@ -110,7 +110,12 @@ textarea{flex:1;min-height:42px;max-height:120px;resize:none;border:0;outline:no
 #toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#16201c;color:#fff;padding:10px 16px;
   border-radius:999px;font-size:14px;opacity:0;pointer-events:none;transition:opacity .2s;max-width:90%;text-align:center}
 #toast.on{opacity:1}
+#demo{flex:none;text-align:center;font-size:11px;font-weight:600;letter-spacing:.3px;padding:4px 8px;
+  padding-top:max(4px,env(safe-area-inset-top));background:var(--soft);color:var(--pri)}
+@media(min-width:700px){html{background:var(--ln)}
+  body{max-width:480px;margin:0 auto;box-shadow:0 0 0 1px var(--ln),0 12px 40px rgba(0,0,0,.12)}}
 </style></head><body>
+<div id="demo">Demo: simulated board and radio, no ESP32 connected</div>
 <header>
  <div class="brand"><span class="name">Johnify</span><span id="dot" class="dot"></span></div>
  <button id="bCreate" class="btn pri"></button>
@@ -155,13 +160,64 @@ function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');
   clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),2600)}
 function setLink(ok){$('#dot').className='dot '+(ok?'on':'off');$('#dot').title=ok?'Connected to the board':'Not connected'}
 
+const DEMO={made:''};
+const hex8=()=>Array.from({length:8},()=>'0123456789abcdef'[Math.random()*16|0]).join('');
+const BOOT=hex8(),T0=Date.now();
+const BOARD={rooms:[],msgs:[],seq:1,rx:0,tx:0,relayed:0,repeater:false};
+const FRIEND={dev:'f00dcafe',name:'Sam'};
+const REPLIES=[
+ [/\b(hi|hello|hey|yo)\b/i,['Hey! Reading you loud and clear.','Hi there. Nice to hear from you over the radio.']],
+ [/(how|what).*(work|this)/i,['Your phone talks to the board over Wi-Fi. The board encrypts the message and broadcasts it by radio to every other Johnify board nearby.']],
+ [/(internet|wifi|wi-fi|signal|router)/i,['No internet involved at all. The boards talk to each other directly.']],
+ [/(range|far|distance)/i,['Around 100 to 200 m in the open. A repeater board in the middle extends it.']],
+ [/(repeat|relay)/i,['A repeater just re-broadcasts what it hears. It cannot read the messages, they stay encrypted.']],
+ [/(encrypt|secure|private|safe)/i,['Everything is AES-256 encrypted with a key made from the chat code. Only people with the code can read it.']],
+ [/\?\s*$/,['Good question. Give me a second.','Hmm, not sure. What do you think?']]];
+const FALL=['Got it.','Makes sense.','Nice.','Ha, agreed.','Message received over the radio.','Copy that.'];
+function addMsg(room,dev,name,text,age){
+  BOARD.msgs.push({seq:BOARD.seq++,i:hex8(),d:dev,r:room,n:name,x:text,ts:Date.now()-(age||0)*1000});
+  if(BOARD.msgs.length>200)BOARD.msgs.shift()}
+function ensure(c){
+  if(BOARD.rooms.includes(c))return false;
+  if(BOARD.rooms.length>=24)BOARD.rooms.shift();
+  BOARD.rooms.push(c);return true}
+function friendReply(room,text){
+  let pick=null;
+  for(const[re,list]of REPLIES)if(re.test(text)){pick=list[Math.random()*list.length|0];break}
+  if(!pick)pick=FALL[BOARD.seq%FALL.length];
+  setTimeout(()=>{BOARD.rx++;if(BOARD.repeater)BOARD.relayed++;addMsg(room,FRIEND.dev,FRIEND.name,pick)},1500+Math.random()*1800)}
+setInterval(()=>{if(BOARD.repeater){BOARD.rx++;BOARD.tx++;BOARD.relayed++}},3500);
+const ROOMRE=/^[A-Z0-9]{10}$/;
 async function api(p,o,post){
-  const q=new URLSearchParams(o||{}),c=new AbortController(),t=setTimeout(()=>c.abort(),5000);
-  try{
-    const r=post?await fetch(p,{method:'POST',body:q,signal:c.signal}):await fetch(p+'?'+q,{signal:c.signal});
-    if(!r.ok)throw new Error(await r.text());
-    return await r.json();
-  }finally{clearTimeout(t)}}
+  await new Promise(r=>setTimeout(r,40+Math.random()*60));
+  o=o||{};
+  if(p==='/api/hello')return{dev:/^[0-9a-f]{8}$/.test(o.dev||'')?o.dev:hex8(),ssid:'Johnify-9F3A'};
+  if(p==='/api/join'){
+    const c=String(o.room||'').toUpperCase();
+    if(!ROOMRE.test(c))throw new Error('bad room');
+    if(ensure(c)&&c!==DEMO.made)addMsg(c,FRIEND.dev,FRIEND.name,'You found the room. Say something and I will answer.',45);
+    return{ok:true}}
+  if(p==='/api/send'){
+    const c=String(o.room||'').toUpperCase(),t=String(o.text||'').trim();
+    if(!ROOMRE.test(c)||!t)throw new Error('bad');
+    ensure(c);addMsg(c,o.dev,String(o.name||'User').slice(0,12),t);
+    BOARD.tx+=2;friendReply(c,t);return{ok:true}}
+  if(p==='/api/poll'){
+    let since=+o.since||0;
+    if(o.boot!==BOOT)since=0;
+    const codes=String(o.r||'').split(',').map(s=>s.trim().toUpperCase()).filter(s=>ROOMRE.test(s));
+    codes.forEach(ensure);
+    let last=since;const out=[];
+    for(const m of BOARD.msgs){
+      if(m.seq<=since)continue;
+      if(codes.includes(m.r)&&out.length>=30){last=m.seq-1;break}
+      last=m.seq;
+      if(codes.includes(m.r))out.push({i:m.i,d:m.d,r:m.r,n:m.n,x:m.x,a:Math.floor((Date.now()-m.ts)/1000)})}
+    return{boot:BOOT,msgs:out,next:last}}
+  if(p==='/api/status')return{repeater:BOARD.repeater,ssid:'Johnify-9F3A',clients:1,rooms:BOARD.rooms.length,
+    rx:BOARD.rx,tx:BOARD.tx,relayed:BOARD.relayed,up:Math.floor((Date.now()-T0)/1000)+2831};
+  if(p==='/api/repeater'){BOARD.repeater=String(o.on)==='1';return{repeater:BOARD.repeater}}
+  throw new Error('not found')}
 
 async function hello(){const h=await api('/api/hello',{dev:S.dev});S.dev=h.dev;save();return h}
 
@@ -169,7 +225,7 @@ function gen(){
   const A='ABCDEFGHJKMNPQRSTUVWXYZ23456789',a=new Uint8Array(10);
   if(window.crypto&&crypto.getRandomValues)crypto.getRandomValues(a);
   else for(let i=0;i<10;i++)a[i]=Math.random()*256;
-  return[...a].map(x=>A[x%A.length]).join('')}
+  const c=[...a].map(x=>A[x%A.length]).join('');DEMO.made=c;return c}
 
 function copy(t){try{const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);
   a.select();document.execCommand('copy');a.remove();toast('Code copied')}catch(e){toast('Code: '+t)}}
