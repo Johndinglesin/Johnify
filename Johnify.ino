@@ -37,6 +37,8 @@ struct __attribute__((packed)) Pkt {
 static_assert(offsetof(Pkt, body) == PKT_HDR, "packet header should be 32 bytes");
 static_assert(sizeof(Pkt) <= 250, "ESP-NOW packets can be at most 250 bytes");
 
+struct Out { char *b; size_t cap; size_t n; };
+
 WebServer   server(80);
 DNSServer   dns;
 Preferences prefs;
@@ -450,8 +452,6 @@ size_t copyUtf8(const String &s, char *dst, size_t maxB) {
   memcpy(dst, s.c_str(), n);
   return n;
 }
-
-struct Out { char *b; size_t cap; size_t n; };
 
 void outPut(Out &o, const char *s) {
   size_t l = strlen(s);
