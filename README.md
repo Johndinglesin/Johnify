@@ -24,6 +24,7 @@ Written for the Seeed Studio **XIAO ESP32S3**. It should work on other ESP32-fam
 - [Memory and limits](#memory-and-limits)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
+- [Repository layout](#repository-layout)
 
 ---
 
@@ -70,7 +71,7 @@ Replace the port with your own (`COMx` on Windows).
 3. Press **Create chat**. You get a 10-character code.
 4. Give the code to the other person. They connect to their own board, press **Join**, and enter it.
 5. Messages sent by either person appear on the other's phone.
-6. The **Repeater** page has a switch to make that board relay traffic, plus live counters.
+6. The **Settings** page (the sliders icon in the top-right corner) has your display name, the repeater switch that makes that board relay traffic, and live counters.
 
 If the page does not load, turn off mobile data on the phone. Some phones route browser traffic over cellular when the Wi-Fi network has no internet.
 
@@ -213,7 +214,7 @@ Registers a phone. If `dev` is missing or invalid, the board generates a random 
 
 ### `POST /api/join` (form: `room`)
 
-Makes the board start listening for a chat code. Idempotent. Adds the room (and derives its key) if it is new. If all `MAX_ROOMS` slots are in use, the least recently used room is replaced.
+Makes the board start listening for a chat code. Idempotent. Adds the room (and derives its key) if it is new. If all `MAX_ROOMS` slots are in use, the least recently used room is replaced. Only create, join, and send do this.
 
 ```json
 { "ok": true }
@@ -229,11 +230,11 @@ Encrypts, stores locally, and broadcasts a message. `name` is truncated to 12 by
 { "ok": true, "i": "5e8c01aa" }
 ```
 
-Errors: `bad room`, `bad dev`, `empty`, `crypto`.
+Errors: `bad room`, `bad dev`, `empty` (400), `crypto` (500), `radio busy` (503, the send queue is full and the message was not sent). The web app turns each of these into a plain-language message.
 
 ### `GET /api/poll?since=<n>&boot=<hex>&r=<code,code,...>`
 
-Returns messages newer than sequence number `since` for the listed chats. Also registers any listed chats the board does not have yet.
+Returns messages newer than sequence number `since` for the listed chats. Also registers any listed chats the board does not have yet, as long as there is a free slot (polling never replaces an existing chat).
 
 ```json
 {
@@ -254,13 +255,24 @@ Returns messages newer than sequence number `since` for the listed chats. Also r
 | `a` | Age of the message in seconds, by the board's clock. |
 | `next` | The value the client should send as `since` next time. |
 
-If the `boot` sent by the client does not match the board's, `since` is treated as 0. This handles a phone switching boards or a board rebooting. At most 30 messages are returned per call; if there are more, `next` points at the last one scanned and the client simply polls again.
+If the `boot` sent by the client does not match the board's, `since` is treated as 0. This handles a phone switching boards or a board rebooting. At most 30 messages (and about 4.5 KB of JSON) are returned per call; if there are more, `next` points at the last one scanned and the client simply polls again.
+
+### `GET /api/log`
+
+The board's last 16 events (start-up, radio failures, full queues, restarts), oldest first. Also printed to the serial port with a `[johnify]` prefix.
+
+```json
+{ "log": ["0s Johnify 1.1.0 starting", "2s Ready: Johnify-9F3A, repeater off, 1 chats saved"] }
+```
 
 ### `GET /api/status`
 
 ```json
-{ "repeater": false, "ssid": "Johnify-9F3A", "clients": 2, "rooms": 3,
-  "rx": 118, "tx": 64, "relayed": 0, "up": 5321 }
+{ "ver": "1.1.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
+  "ssid": "Johnify-9F3A", "ch": 1, "hops": 4, "clients": 2, "rooms": 3,
+  "rx": 118, "tx": 64, "relayed": 0,
+  "rxDrop": 0, "txFail": 0, "bad": 3, "auth": 0, "reinit": 0,
+  "heap": 214000, "minHeap": 186000, "up": 5321 }
 ```
 
 ### `POST /api/repeater` (form: `on=1` or `on=0`)
@@ -292,7 +304,7 @@ The app is a single HTML page stored as a string inside `Johnify.ino` (the `INDE
 - Incoming messages are de-duplicated against saved history by `devId + msgId`, so repeated or re-fetched messages never show twice.
 - When a chat is created or joined, the client fetches that chat's history with `since=0`, so a phone joining late sees what the board still holds.
 - Message times shown in the UI are computed as `now - age` when the message is first received. The board has no real-time clock, so times are approximate for old messages.
-- Requests time out after 5 s. The header indicator shows **Linked** or **No link** based on whether the last poll succeeded.
+- Requests time out after 5 s. A small dot next to the title is green when the last poll succeeded and red when it failed.
 
 Because phones are plain HTTP pages, `crypto.subtle` is not available. That is why encryption happens on the board rather than in the browser.
 
@@ -306,7 +318,7 @@ Settings are `#define`s at the top of `Johnify.ino`.
 | `AP_PASSWORD` | `""` | Empty for an open network. 8+ characters to require a WPA2 password. |
 | `WIFI_CHANNEL` | `1` | Must match on all boards. |
 | `MAX_HOPS` | `4` | Maximum repeater hops. |
-| `MAX_ROOMS` | `16` | Chats stored per board. |
+| `MAX_ROOMS` | `24` | Chats stored per board. |
 | `MAX_MSGS` | `200` | Messages kept in RAM per board. |
 | `MAX_TEXT` | `190` | Maximum message length in bytes. Limited by the 250-byte ESP-NOW payload. |
 | `ROOM_LEN` | `10` | Chat code length. The web app also assumes 10, so change both. |
@@ -325,17 +337,39 @@ Approximate static RAM use:
 | Transmit queue (16 × ~260 B) | ~4 KB |
 | Receive queue (16 × ~251 B) | ~4 KB |
 | Seen-ID ring (256 × 8 B) | 2 KB |
-| Rooms (16 × ~56 B) | ~1 KB |
+| Rooms (24 × ~56 B) | ~1.3 KB |
+| Poll response buffer | 6 KB |
 
-Persistent storage (NVS, namespace `johnify`) holds the comma-separated list of chat codes and the repeater flag. Messages are not written to flash, so they are lost on power loss; phones keep their own copies.
+Persistent storage (NVS, namespace `johnify`) holds the comma-separated list of chat codes and the repeater flag. A value is only written when it has changed, so normal use does not wear the flash. Messages are not written to flash, so they are lost on power loss; phones keep their own copies.
 
 Other limits:
 
 - 190 bytes of text per message, 12 bytes of name.
 - Up to 8 phones per board at once (soft AP setting).
-- A board holds 16 chats. Using more evicts the least recently used.
+- A board holds 24 chats and a phone can have 12. If more than 24 chats are active on one board, creating or joining a new one replaces the least recently used. Polling never evicts, so a busy board cannot thrash its chat list or flash.
 - Message ordering across boards is by arrival, not by a shared clock.
 - No delivery guarantee. Broadcast is best-effort; double-sending reduces but does not eliminate loss.
+
+## Reliability and diagnostics
+
+- **Self-recovery.** Every 5 seconds the board checks its health. If the radio fails to send 5 packets in a row, it restarts the ESP-NOW radio on its own. If that restart fails, or if free memory stays below 20 KB for 30 seconds, it reboots. If the hotspot or radio cannot start at boot, it reboots and tries again.
+- **Honest errors.** If a message cannot be queued for sending, the phone is told (`radio busy`) and the message stays in the input box. Nothing is silently dropped on the way out.
+- **Counters.** The board counts packets dropped because the receive queue was full (`rxDrop`), failed sends (`txFail`), rejected packets (`bad`, wrong format), failed security checks (`auth`), and radio restarts (`reinit`). They appear under Settings, Health, and the non-zero ones are highlighted.
+- **Event log.** The last 16 events are kept in memory and shown in the bug report. The same lines go to the serial monitor at 115200 baud.
+- **Bug report.** Settings has a **Copy bug report** button. Nothing is sent anywhere. It gathers firmware version, chip, SDK, uptime, channel, memory, counters, recent events, and the phone's browser into one block of text, selects it, and tries to copy it. If the browser blocks copying, select the text and copy it by hand. Paste it into a GitHub issue.
+- **Connection warning.** If the phone cannot reach the board twice in a row, a red banner appears under the header with the Wi-Fi name to join.
+- **Input cleaning.** Control characters are removed from names and messages, long text is cut on character boundaries, and a live "N left" counter appears in the message box as you near the 190-byte limit.
+
+## Memory safety
+
+- All long-lived data is in fixed-size global arrays: the message ring, the chat table, the duplicate ring, and the two packet queues. Nothing in the radio path allocates memory.
+- HTTP replies are built in fixed-size buffers with bounds-checked helpers. The poll reply is built in one 6 KB buffer and stops adding messages when less than 1,400 bytes remain, which is more than the largest possible single message after JSON escaping.
+- The only dynamic memory is the short-lived Arduino `String` objects the web server library creates for request parameters. They are freed when each request ends.
+- Incoming packets are length-checked before use. Each message copy is bounded by the maximum text size, and strings are always terminated.
+- If a queue is full, new items are dropped instead of overwriting anything.
+- The web page keeps at most 300 messages per chat and 12 chats in browser storage, clears its timers when a screen changes, and cancels any request that takes longer than 5 seconds.
+
+## Security model
 
 ### What is protected
 
@@ -357,21 +391,19 @@ Other limits:
 
 This project has not had an independent security review.
 
+Firmware version: 1.1.0.
+
 ## Troubleshooting
 
 | Symptom | Things to check |
 |---------|-----------------|
 | Johnify network does not appear | Board powered? Wait a few seconds after boot. Try the serial monitor for the printed SSID. |
 | Page does not load | Open `http://192.168.4.1` directly. Turn off mobile data. Some phones need the captive-portal prompt dismissed first. |
-| Header shows **No link** | The phone left the board's Wi-Fi, or the board rebooted. Reconnect. |
-| Messages do not reach the other board | Both boards must use the same `WIFI_CHANNEL` and the same chat code, and be within range. Open the Repeater page on the receiving board and watch **Packets heard** while the other board sends. If it does not rise, it is a radio problem. If it rises but nothing appears, the chat codes differ. |
+| Dot next to the title is red | The phone left the board's Wi-Fi, or the board rebooted. Reconnect. |
+| Messages do not reach the other board | Both boards must use the same `WIFI_CHANNEL` and the same chat code, and be within range. Open Settings on the receiving board and watch **Packets heard** while the other board sends. If it does not rise, it is a radio problem. If it rises but nothing appears, the chat codes differ. |
 | Messages disappear after a board restarts | Expected. The board's RAM history is lost. Phones keep their own copy. |
 | Compile error about `esp_now_recv_info_t` | Old board package. The sketch handles 2.x and 3.x, so update the package or report the exact version. |
 | Chats lost after switching browsers | History is stored per browser per device. The "sign in to network" popup uses a separate browser storage from Chrome or Safari. |
 | No serial output | Enable **USB CDC On Boot** in the Arduino IDE Tools menu. |
 
 The onboard LED blinks on each packet sent or received.
-
-## Testing status
-
-Beta: V.0.1.1
