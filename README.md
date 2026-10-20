@@ -4,7 +4,14 @@ An encrypted group chat that runs on ESP32 boards with no internet, router, or c
 
 Each board runs its own Wi-Fi hotspot and serves a small chat web app. Phones connect to the nearest board with a browser. Boards pass messages to each other over ESP-NOW, a connectionless 2.4 GHz protocol built into the ESP32. Messages are encrypted with AES-256-GCM using a key derived from a shared chat code. Any board can also be switched into repeater mode to extend range.
 
-Written for the Seeed Studio **XIAO ESP32S3**. It should work on other ESP32-family boards with ESP-NOW and mbedTLS, but only the XIAO is targeted.
+There are two implementations of the same firmware, each a single source file:
+
+| Version | File | Language | Boards |
+|---------|------|----------|--------|
+| Arduino | `arduino/Johnify/Johnify.ino` | C++ | Written for the Seeed Studio **XIAO ESP32S3**. Other ESP32-family boards supported by the Arduino ESP32 core should work. |
+| MicroPython | `micropython/main.py` | Python | Any ESP32-family board (ESP32, S2, S3, C3, C6) running MicroPython 1.21 or newer. See [MicroPython version](#micropython-version). |
+
+Both serve the same web app, speak the same packet format, and use the same encryption, so boards running either version can share chats and relay for each other in the same network. A test that builds packets with the actual Arduino code and the MicroPython code and exchanges them in both directions is described under [Verification](#verification).
 
 ---
 
@@ -12,6 +19,7 @@ Written for the Seeed Studio **XIAO ESP32S3**. It should work on other ESP32-fam
 
 - [Features](#features)
 - [Quick start](#quick-start)
+- [MicroPython version](#micropython-version)
 - [Using Johnify](#using-johnify)
 - [Architecture](#architecture)
 - [Packet format](#packet-format)
@@ -19,12 +27,10 @@ Written for the Seeed Studio **XIAO ESP32S3**. It should work on other ESP32-fam
 - [Duplicate suppression and repeaters](#duplicate-suppression-and-repeaters)
 - [Radio notes](#radio-notes)
 - [HTTP API](#http-api)
-- [Web client](#web-client)
 - [Configuration](#configuration)
 - [Memory and limits](#memory-and-limits)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
-- [Repository layout](#repository-layout)
 
 ---
 
@@ -37,17 +43,19 @@ Written for the Seeed Studio **XIAO ESP32S3**. It should work on other ESP32-fam
 - Repeater mode: a board can re-broadcast any message it hears, for any chat, up to a hop limit. Repeaters do not need to know the chat code and cannot read the messages they relay.
 - Chat history is kept in the phone's browser storage. Chat codes are kept in the board's flash. Recent messages are kept in the board's RAM.
 - Captive-portal behaviour: phones prompt "sign in to network" and any URL typed while connected opens the app.
+- A mixed network works. Arduino boards and MicroPython boards can chat and relay for each other.
+- The web app is served entirely by the board and makes no outside requests, so it works with no internet. It uses each phone's built-in fonts.
 
 ## Quick start
 
 ### Hardware
 
-- One or more Seeed XIAO ESP32S3 boards, each powered over USB-C or a LiPo battery. Two boards are the minimum to test; each additional board is another chat node or a repeater.
+- Two or more ESP32-family boards. Two are the minimum to test; each additional board is another chat node or a repeater. The Arduino version is written for the Seeed XIAO ESP32S3, powered over USB-C or a LiPo battery. The MicroPython version runs on a wider range of boards (see below).
 
 ### Arduino IDE
 
 1. Install the **esp32 by Espressif Systems** board package (3.x recommended; 2.x is also handled).
-2. Open `Johnify/Johnify.ino`. It is the only source file.
+2. Open `arduino/Johnify/Johnify.ino`. It is the only source file.
 3. Board: **XIAO_ESP32S3**.
 4. Optional: set **USB CDC On Boot** to *Enabled* if you want serial output over the USB port.
 5. Upload the same sketch to every board.
@@ -58,11 +66,107 @@ No third-party libraries are required. `WiFi`, `WebServer`, `DNSServer`, `Prefer
 
 ```sh
 arduino-cli core install esp32:esp32
-arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 Johnify
-arduino-cli upload  --fqbn esp32:esp32:XIAO_ESP32S3 -p /dev/ttyACM0 Johnify
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 arduino/Johnify
+arduino-cli upload  --fqbn esp32:esp32:XIAO_ESP32S3 -p /dev/ttyACM0 arduino/Johnify
 ```
 
 Replace the port with your own (`COMx` on Windows).
+
+## MicroPython version
+
+`micropython/main.py` is a full port of the Arduino firmware, written for a broad range of boards rather than one. It is one file, with the web app inside it, and it behaves the same way from the phone's point of view: same hotspot name, same web page (byte for byte), same HTTP API, same packet format, same key derivation, same limits.
+
+### Which boards
+
+The port needs a MicroPython build that includes `espnow`, `asyncio`, `hashlib` with SHA-256, and `cryptolib` with AES. Every current ESP32-family build does.
+
+| Chip | Examples | Notes |
+|------|----------|-------|
+| ESP32 | DevKitC, WROOM and WROVER modules, TTGO, many others | Usually no PSRAM. Lower `MAX_ROOMS` and `MAX_MSGS` (see below). |
+| ESP32-S2 | S2 mini and similar | Single core, limited RAM. Use the small-board settings. |
+| ESP32-S3 | XIAO ESP32S3, DevKitC-1, many others | With PSRAM (for example the XIAO) the defaults are fine. |
+| ESP32-C3 | XIAO ESP32C3, SuperMini | Single core, limited RAM. Use the small-board settings. |
+| ESP32-C6 | DevKitC-1 | Needs a MicroPython build that supports the C6. |
+
+Not supported: the ESP8266 (not enough RAM), the Raspberry Pi Pico W and other RP2 boards (no ESP-NOW), and non-Espressif boards. The program is written for these chips and checked as described under [Verification](#verification), but it has not been run on every board in the table. If a board misbehaves, use **Copy bug report** and open an issue with the chip and MicroPython version.
+
+### Requirements
+
+- **MicroPython 1.21 or newer** for the `espnow` module and a current `asyncio`.
+- **Keep the file named `main.py`, uncompressed and complete.** The web page is stored inside it as comment lines at the end of the file and is read back from flash when a phone asks for it. If you rename the file, set `PAGE_FILE` to the new name. Do not precompile it with `mpy-cross` and do not strip its comments, or the page is lost. If the page cannot be found the board answers with a clear message saying so, and logs it.
+- **Free RAM.** The page is not held in RAM, which is what makes small boards workable. What does use RAM is the chats (about 2 KB each) and the message history (roughly 250 to 450 bytes per message, depending on length). These are rough estimates. Suggested starting values:
+
+| Board | `MAX_ROOMS` | `MAX_MSGS` |
+|-------|------------:|-----------:|
+| With PSRAM (for example a XIAO ESP32S3 on a PSRAM firmware build) | 24 | 200 |
+| ESP32 or ESP32-S3 without PSRAM | 8 | 60 |
+| ESP32-S2 or ESP32-C3 | 6 | 40 |
+
+The program also protects itself. If free memory drops below about 30 KB it discards the older half of the message history, and only reboots if memory stays below about 12 KB.
+
+### Install
+
+1. Download the MicroPython `.bin` for your board from the MicroPython downloads page. Pick the exact board, or the generic build for your chip. For a board with PSRAM, such as the XIAO ESP32S3, pick the build with PSRAM support (for the generic S3 build that is `ESP32_GENERIC_S3-SPIRAM_OCT`).
+2. Put the board in bootloader mode. On the XIAO, hold the **B** (boot) button while plugging in USB. Most dev boards have a BOOT button to hold while pressing EN or reset.
+3. Flash it. The start address depends on the chip:
+
+| Chip | Flash offset |
+|------|--------------|
+| ESP32, ESP32-S2 | `0x1000` |
+| ESP32-S3, ESP32-C3, ESP32-C6 | `0x0` |
+
+```sh
+pip install esptool mpremote
+esptool.py --chip esp32s3 --port /dev/ttyACM0 erase_flash
+esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 write_flash -z 0x0 <firmware>.bin
+```
+
+Use your own `--chip` value and offset, and your own port (`COMx` on Windows). The port name often changes after the board leaves bootloader mode.
+
+4. Unplug and replug the board without holding the button, then copy the program over and restart it:
+
+```sh
+mpremote cp micropython/main.py :main.py
+mpremote reset
+```
+
+5. To watch the log, run `mpremote repl`. Log lines start with `[johnify]`. Thonny also works: save the file to the board as `main.py`.
+
+The program starts by itself on every power-up. Settings are variables at the top of `main.py`. Set `LED_PIN` to your board's LED pin if you want the activity light (see Configuration). It is off by default because a pin number that is an LED on one board can be something else on another.
+
+While developing over USB, set `USE_WATCHDOG = False`. The watchdog cannot be stopped once it starts, so a board you have interrupted with Ctrl-C will reboot after 30 seconds.
+
+### What is the same
+
+- Wi-Fi hotspot `Johnify-XXXX` (the name uses the same bytes of the MAC as the Arduino build), captive-portal DNS, channel 1, up to 8 phones.
+- The web app, including Settings, repeater mode, diagnostics, and the bug report button.
+- The HTTP API and its error codes (`bad room`, `bad dev`, `empty`, `crypto`, `radio busy`).
+- The packet layout, the key derivation (5,000 rounds of SHA-256), and AES-256-GCM with the same additional authenticated data, so packets from either version decrypt on the other.
+- Duplicate suppression, the 4-hop repeater limit with random relay delay, sending each message twice, 24 chats per board, 12 per phone, 200 messages in memory, 190 bytes of text.
+- Saved chat codes and the repeater setting in the board's flash (the ESP32 NVS store), written only when they change.
+- Self-recovery: the radio is restarted after 5 failed sends in a row, and the board reboots on very low memory or a fatal error.
+
+### What is different, and what is not supported
+
+| Area | Difference |
+|------|------------|
+| **Web page storage** | Held in `main.py` as comment lines and streamed from flash on request, not kept in RAM. The file must stay named as `PAGE_FILE` and must not be precompiled or stripped. |
+| **AES-GCM** | MicroPython has no GCM mode, only the raw AES block function. The port builds GCM itself in Python on top of that. The output is standard AES-256-GCM, byte for byte the same as the Arduino build, but it runs in software, so encrypting or decrypting one message takes tens of milliseconds instead of well under one. |
+| **Adding a chat** | Deriving the key (5,000 SHA-256 rounds in Python) briefly blocks the board, on the order of a second. |
+| **Saved chats at boot** | They load one by one in the background after the hotspot is up. A message for a chat that has not finished loading is not decrypted. On a board with many saved chats this window lasts a few seconds. |
+| **Receive queue** | The Arduino build has its own 16-packet queue. Here the ESP-NOW driver's receive buffer (set to 4 KB) does that job, and the "packets dropped" counter comes from the driver's statistics. |
+| **Lowest free memory** | The Arduino build reads the true low-water mark. MicroPython has no equivalent, so the value shown is the lowest reading sampled every 5 seconds. |
+| **Low memory** | The message history lives in RAM that grows with use, and is trimmed under memory pressure. The Arduino build uses fixed arrays. |
+| **Concurrency** | One cooperative event loop instead of FreeRTOS tasks. Crypto and key derivation block everything else for a moment. |
+| **Web server** | A small built-in HTTP/1.1 server: one request per connection, request bodies up to 2 KB, at most 6 connections at once (extra ones are dropped and the page retries), 10 seconds per request. It does not support keep-alive, chunked uploads, or file uploads, none of which the app uses. |
+| **Radio tuning** | Transmit power and Wi-Fi power-save are set when the firmware build allows it and skipped silently when it does not. |
+| **LED** | Off unless `LED_PIN` is set. |
+| **Clock** | Uptime and message ages use the board's seconds counter. |
+| **Version string** | Settings shows `1.2.0-mp`, and the SDK line shows the MicroPython version instead of the ESP-IDF version. |
+
+Nothing in the Arduino feature set is missing from the port.
+
+---
 
 ## Using Johnify
 
@@ -98,7 +202,9 @@ Each board runs both Wi-Fi modes at once (`WIFI_AP_STA`):
 - The **access point** serves phones.
 - The **station** interface is never connected to a network. ESP-NOW uses it as the radio path for sending.
 
-The main loop is single-threaded. It services DNS, HTTP, the receive queue, and the transmit queue in turn. The only code that runs outside the loop is the ESP-NOW receive callback, which only copies the packet into a queue.
+**Arduino.** Two tasks share the board's state under one lock. The Arduino `loop()` handles the radio: it drains the receive queue, sends queued packets, and runs the health check. A second task runs the web server and the DNS server. They are separate because the Arduino web server library waits on idle connections for up to 5 seconds (browsers open spare connections), and that must not delay the radio. Every API handler and the radio code hold the lock only while touching shared data. The ESP-NOW receive callback runs in the Wi-Fi task and only copies the packet into a queue under a spinlock.
+
+**MicroPython.** One cooperative event loop runs the radio, the web server, the DNS server, background chat loading, and the health check as separate coroutines. Nothing runs in parallel, so no lock is needed; slow work such as key derivation briefly holds up the others.
 
 ### Life of a message
 
@@ -262,13 +368,13 @@ If the `boot` sent by the client does not match the board's, `since` is treated 
 The board's last 16 events (start-up, radio failures, full queues, restarts), oldest first. Also printed to the serial port with a `[johnify]` prefix.
 
 ```json
-{ "log": ["0s Johnify 1.1.0 starting", "2s Ready: Johnify-9F3A, repeater off, 1 chats saved"] }
+{ "log": ["0s Johnify 1.2.0 starting", "2s Ready: Johnify-9F3A, repeater off, 1 chats saved"] }
 ```
 
 ### `GET /api/status`
 
 ```json
-{ "ver": "1.1.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
+{ "ver": "1.2.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
   "ssid": "Johnify-9F3A", "ch": 1, "hops": 4, "clients": 2, "rooms": 3,
   "rx": 118, "tx": 64, "relayed": 0,
   "rxDrop": 0, "txFail": 0, "bad": 3, "auth": 0, "reinit": 0,
@@ -281,11 +387,16 @@ Switches repeater mode. The setting is saved to flash and survives reboots.
 
 ### Other paths
 
-`/` serves the app. `/favicon.ico` returns 204. Every other path replies `302` to `http://192.168.4.1/`, which together with a DNS server that answers every query with the board's address makes the captive-portal behaviour work.
+`/` serves the app (`Cache-Control: no-cache`, so a firmware update shows up immediately). `/favicon.ico` returns 204. Every other path replies `302` to `http://192.168.4.1/`, which together with a DNS server that answers every query with the board's address makes the captive-portal behaviour work.
 
-## Web client
+### Error handling in the page
 
-The app is a single HTML page stored as a string inside `Johnify.ino` (the `INDEX_HTML` constant), which the board serves from flash. It uses only system fonts and has no external requests, because the phone has no internet while connected to the board.
+- Saved data is validated when the page loads, so corrupted or old browser storage cannot break it.
+- If the browser refuses to store data, the page says so once.
+- Every request has a 5-second limit. Replies that are not valid JSON (such as a captive-portal page from the phone) are treated as "not the board".
+- Board errors are translated into plain sentences. Unexpected script errors show a single notice.
+- The page stops polling while the tab is hidden and slows down after repeated failures.
+- A message cannot be double-sent while the previous one is in flight, and an over-length message is blocked before it is sent.
 
 ### Saved state (`localStorage`, key `jf`)
 
@@ -310,7 +421,7 @@ Because phones are plain HTTP pages, `crypto.subtle` is not available. That is w
 
 ## Configuration
 
-Settings are `#define`s at the top of `Johnify.ino`.
+Settings are `#define`s at the top of `Johnify.ino`, or variables of the same names at the top of `main.py`. These exist only in the MicroPython version: `MAX_WEB_CLIENTS`, `LED_PIN`, `LED_ACTIVE_LOW`, `USE_WATCHDOG`, and `PAGE_FILE`. `RXQ_SIZE` exists only in the Arduino version.
 
 | Name | Default | Description |
 |------|--------:|-------------|
@@ -324,12 +435,17 @@ Settings are `#define`s at the top of `Johnify.ino`.
 | `ROOM_LEN` | `10` | Chat code length. The web app also assumes 10, so change both. |
 | `SEEN_SIZE` | `256` | Duplicate-suppression memory. |
 | `TXQ_SIZE`, `RXQ_SIZE` | `16` | Transmit and receive queue depth. |
+| `MAX_WEB_CLIENTS` | `6` | MicroPython only. Web connections handled at once. |
+| `LED_PIN` | `None` | MicroPython only. Pin number of a status LED, or `None`. XIAO ESP32S3: 21. Many ESP32 dev boards: 2. |
+| `LED_ACTIVE_LOW` | `True` | MicroPython only. `True` if the LED lights when the pin is low (XIAO), `False` for most dev boards. |
+| `USE_WATCHDOG` | `True` | MicroPython only. Reboot if the program freezes for 30 seconds. |
+| `PAGE_FILE` | `"main.py"` | MicroPython only. File the web page is read from. |
 
 If you change `MAX_TEXT`, keep `PKT_HDR + 12 + MAX_TEXT + 16 <= 250`. A `static_assert` enforces this at compile time.
 
 ## Memory and limits
 
-Approximate static RAM use:
+Approximate static RAM use of the Arduino version (the Arduino build also stores about 27 KB of web page in flash, not RAM; MicroPython memory is covered in its own section):
 
 | Item | Size |
 |------|-----:|
@@ -352,7 +468,8 @@ Other limits:
 
 ## Reliability and diagnostics
 
-- **Self-recovery.** Every 5 seconds the board checks its health. If the radio fails to send 5 packets in a row, it restarts the ESP-NOW radio on its own. If that restart fails, or if free memory stays below 20 KB for 30 seconds, it reboots. If the hotspot or radio cannot start at boot, it reboots and tries again.
+- **The radio is never held up by the web server.** On Arduino the web server runs in its own task, so a slow or idle phone connection cannot delay sending or receiving.
+- **Self-recovery.** Every 5 seconds the board checks its health. If the radio fails to send 5 packets in a row, it restarts the ESP-NOW radio on its own. If that restart fails, or if free memory stays below 20 KB for 30 seconds (12 KB on MicroPython, which first discards older messages), it reboots. If the hotspot or radio cannot start at boot, it reboots and tries again.
 - **Honest errors.** If a message cannot be queued for sending, the phone is told (`radio busy`) and the message stays in the input box. Nothing is silently dropped on the way out.
 - **Counters.** The board counts packets dropped because the receive queue was full (`rxDrop`), failed sends (`txFail`), rejected packets (`bad`, wrong format), failed security checks (`auth`), and radio restarts (`reinit`). They appear under Settings, Health, and the non-zero ones are highlighted.
 - **Event log.** The last 16 events are kept in memory and shown in the bug report. The same lines go to the serial monitor at 115200 baud.
@@ -362,14 +479,26 @@ Other limits:
 
 ## Memory safety
 
+**Arduino**
+
 - All long-lived data is in fixed-size global arrays: the message ring, the chat table, the duplicate ring, and the two packet queues. Nothing in the radio path allocates memory.
 - HTTP replies are built in fixed-size buffers with bounds-checked helpers. The poll reply is built in one 6 KB buffer and stops adding messages when less than 1,400 bytes remain, which is more than the largest possible single message after JSON escaping.
 - The only dynamic memory is the short-lived Arduino `String` objects the web server library creates for request parameters. They are freed when each request ends.
 - Incoming packets are length-checked before use. Each message copy is bounded by the maximum text size, and strings are always terminated.
 - If a queue is full, new items are dropped instead of overwriting anything.
-- The web page keeps at most 300 messages per chat and 12 chats in browser storage, clears its timers when a screen changes, and cancels any request that takes longer than 5 seconds.
 
-## Security model
+**MicroPython**
+
+- The page is never loaded into RAM. It is read from flash in 1 KB pieces while sending.
+- The message history is a list capped at `MAX_MSGS`, the duplicate memory is a ring with a matching set, and the transmit queue is capped, so none of them can grow without limit.
+- Under memory pressure the older half of the history is dropped before anything else happens, and the board reboots only as a last resort.
+- Web connections are capped, each request has a 10-second limit, and requests with oversized headers or bodies are refused.
+
+**Web page (both versions)**
+
+- The page keeps at most 300 messages per chat and 12 chats in browser storage, clears its timers when a screen changes, and cancels any request that takes longer than 5 seconds.
+
+**Known limit (Arduino).** The Arduino web server library reads a whole request body into memory before the handler runs and has no size cap, so a deliberately oversized request from a device on the hotspot could use up memory. Use `AP_PASSWORD` if you do not want unknown devices on the hotspot.
 
 ### What is protected
 
@@ -389,10 +518,6 @@ Other limits:
 - **Physical access.** Chat codes are stored in the board's flash in plain text.
 - **Denial of service.** Anyone can jam 2.4 GHz or flood ESP-NOW with junk packets.
 
-This project has not had an independent security review.
-
-Firmware version: 1.1.0.
-
 ## Troubleshooting
 
 | Symptom | Things to check |
@@ -404,6 +529,13 @@ Firmware version: 1.1.0.
 | Messages disappear after a board restarts | Expected. The board's RAM history is lost. Phones keep their own copy. |
 | Compile error about `esp_now_recv_info_t` | Old board package. The sketch handles 2.x and 3.x, so update the package or report the exact version. |
 | Chats lost after switching browsers | History is stored per browser per device. The "sign in to network" popup uses a separate browser storage from Chrome or Safari. |
-| No serial output | Enable **USB CDC On Boot** in the Arduino IDE Tools menu. |
+| No serial output (Arduino) | Enable **USB CDC On Boot** in the Arduino IDE Tools menu. |
+| `MemoryError` or repeated "Memory low" in the log on MicroPython | Lower `MAX_ROOMS` and `MAX_MSGS`. See the table under Requirements. On a board with PSRAM, use a firmware build that has PSRAM support. |
+| MicroPython page shows "Johnify web page not found" | `main.py` on the board is not the complete file, was renamed (set `PAGE_FILE`), or was precompiled. Copy the full `main.py` again. |
+| `ImportError: no module named 'espnow'` | The MicroPython build is too old or is not an ESP32 build. Use 1.21 or newer. |
+| MicroPython board reboots every 30 seconds while you work | The watchdog is on. Set `USE_WATCHDOG = False` while developing. |
+| MicroPython prints `Radio error` or `Radio send failed` | Check the log in the bug report. Repeated failures restart the radio automatically. |
 
-The onboard LED blinks on each packet sent or received.
+The status LED, where there is one, blinks on each packet sent or received. On Arduino it is the board's built-in LED. On MicroPython set `LED_PIN`.
+
+Arduino requires the sketch folder name to match the main `.ino` file name, so keep the inner folder named `Johnify`.
