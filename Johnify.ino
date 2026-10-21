@@ -24,7 +24,7 @@
 #define TXQ_SIZE       16           // Packets waiting to be sent.
 #define RXQ_SIZE       16           // Packets waiting to be processed.
 
-#define VERSION   "1.2.0"
+#define VERSION   "1.3.0"
 #define LOG_LINES 16
 #define LOG_WIDTH 72
 
@@ -62,6 +62,8 @@ uint32_t statRx = 0, statTx = 0, statRelay = 0;
 uint32_t statTxFail = 0, statBad = 0, statAuth = 0, statReinit = 0;
 volatile uint32_t statRxDrop = 0;
 uint32_t ledOffAt = 0;
+bool     restartPending = false;
+uint32_t restartAt = 0;
 uint32_t lastHealth = 0;
 uint8_t  lowHeapCount = 0;
 uint8_t  txFailStreak = 0;
@@ -124,6 +126,7 @@ header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;paddi
 .btn{border:2px solid var(--ink);background:transparent;border-radius:8px;padding:9px 12px;font:700 13px/1 var(--sans);cursor:pointer;white-space:nowrap}
 .btn:active{transform:translateY(1px)}
 .btn.pri{background:var(--pri);border-color:var(--pri);color:var(--pritx)}
+.btn.warn{background:var(--acc);border-color:var(--acc);color:var(--acctx)}
 .btn.wide{width:100%;padding:14px;font-size:14px}
 .icon{flex:none;width:38px;height:38px;border:2px solid var(--ink);border-radius:8px;background:none;display:grid;place-items:center;cursor:pointer}
 .icon.on{background:var(--ink);color:var(--paper)}
@@ -201,8 +204,8 @@ textarea{display:block;width:100%;min-height:44px;max-height:120px;resize:none;b
 .switch input:checked+.knob:after{transform:translateX(26px)}
 .field{width:100%;margin:2px 0 12px;padding:6px 0;border:0;border-bottom:2px solid var(--ink);border-radius:0;background:none;font:700 18px var(--sans);outline:none}
 .rep{width:100%;height:170px;margin-top:12px;font:500 12px/1.4 ui-monospace,Menlo,Consolas,monospace}
-#modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,9,6,.6)}
-#modal[hidden]{display:none}
+#modal,#cmodal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,9,6,.6)}
+#modal[hidden],#cmodal[hidden]{display:none}
 .box{width:100%;max-width:340px;padding:20px;border:2px solid var(--ink);border-radius:10px;background:var(--paper)}
 .box h3{margin:0 0 4px;font:400 36px/1 var(--serif)}
 .box p{margin:0;color:var(--mute);font-size:14px}
@@ -227,6 +230,11 @@ textarea{display:block;width:100%;min-height:44px;max-height:120px;resize:none;b
  <p>Type the 10-character code you were given.</p>
  <input id="jc" maxlength="12" placeholder="CODE" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Chat code">
  <div class="acts"><button id="jx" class="btn">Cancel</button><button id="jg" class="btn pri">Join</button></div>
+</div></div>
+<div id="cmodal" hidden><div class="box" role="alertdialog" aria-modal="true" aria-labelledby="ct" aria-describedby="cp">
+ <h3 id="ct"></h3>
+ <p id="cp"></p>
+ <div class="acts" style="margin-top:16px"><button id="cn" class="btn">Cancel</button><button id="cy" class="btn warn"></button></div>
 </div></div>
 <div id="toast" role="status"></div>
 <script>
@@ -268,6 +276,13 @@ const MSG={'bad room':'That chat code is not valid.','bad dev':'Your phone ID is
 const why=e=>e&&e.net?(e.message==='timeout'?'The board is not answering.':'Cannot reach the board. Check your Wi-Fi.'):((e&&MSG[e.message])||'Board error: '+((e&&e.message)||'unknown'));
 
 function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),3000)}
+function ask(title,text,okLabel){
+  return new Promise(res=>{
+    const m=$('#cmodal'),y=$('#cy'),n=$('#cn');
+    $('#ct').textContent=title;$('#cp').textContent=text;y.textContent=okLabel;m.hidden=false;
+    const done=v=>{m.hidden=true;y.onclick=n.onclick=m.onclick=null;res(v)};
+    y.onclick=()=>done(true);n.onclick=()=>done(false);m.onclick=e=>{if(e.target===m)done(false)};
+    n.focus()})}
 function setLink(ok){
   $('#dot').className='dot '+(ok?'on':'off');$('#dot').title=ok?'Connected to the board':'Not connected';
   if(ok){fails=0;$('#warn').hidden=true;return}
@@ -344,6 +359,17 @@ function count(){
   const left=190-bytes(b.value);
   c.hidden=left>40;c.textContent=left>=0?left+' left':(-left)+' too long';c.className='cnt'+(left<0?' over':'')}
 
+async function leaveRoom(code){
+  S.rooms=S.rooms.filter(x=>x!==code);delete S.msgs[code];delete S.unread[code];save();
+  if(view==='chat'&&cur===code)nav('list');
+  for(let n=0;busy&&n<20;n++)await new Promise(r=>setTimeout(r,50));
+  try{await api('/api/leave',{room:code},true);toast('You left the chat.')}
+  catch(e){toast('You left the chat on this phone, but the board could not be reached.')}}
+async function resetBoard(){
+  if(!await ask('Reset this board?','This erases every chat, message and setting on this board and on this phone, then restarts the board. It cannot be undone.','Reset board'))return;
+  try{await api('/api/reset',{confirm:'RESET'},true)}catch(e){toast(why(e));return}
+  S.rooms=[];S.msgs={};S.unread={};S.since=0;S.boot='';S.dev='';S.name='';save();
+  toast('Board reset. It restarts in a few seconds.');nav('list')}
 function nav(v,c){
   if(v===view&&c===cur)return;
   try{history.pushState({v,c:c||null},'')}catch(e){}
@@ -391,8 +417,8 @@ function drawChat(v){
   const scr=el('div','scr'),head=el('div','chead'),mid=el('button','cmid');
   mid.append(el('span','clab','Chat code'),el('span','ccode',fmtCode(cur)));mid.onclick=()=>copy(cur);mid.setAttribute('aria-label','Copy chat code');
   const lv=el('button','leave','Leave');
-  lv.onclick=()=>{if(confirm('Remove this chat from this phone?')){
-    S.rooms=S.rooms.filter(x=>x!==cur);delete S.msgs[cur];delete S.unread[cur];save();nav('list')}};
+  lv.onclick=async()=>{const code=cur;
+    if(await ask('Leave this chat?','It is removed from this phone, its saved messages are deleted, and the board stops keeping it. You can join again later with the code '+fmtCode(code)+'.','Leave'))leaveRoom(code)};
   head.append(backBtn(),mid,lv);
   const enc=el('div','encl');enc.innerHTML=svg('lock',12)+'<span>END-TO-END ENCRYPTED. TAP THE CODE TO COPY IT.</span>';
   const m=el('div','msgs');m.id='msgs';
@@ -459,11 +485,14 @@ function drawSettings(v){
   const net=el('div','tile wide'),health=el('div','tile wide');
   net.append(el('h3',0,'This board'));health.append(el('h3',0,'Health'));
 
+  const rst=el('div','tile wide'),rb=el('button','btn wide warn','Reset board');
+  rst.append(el('h3',0,'Start over'),el('p',0,'Erases every chat, message and setting on this board and on this phone, then restarts the board so it behaves like freshly uploaded firmware. Other phones keep their own copies.'),rb);
+  rb.onclick=resetBoard;
   const bug=el('div','tile wide'),bt=el('button','btn wide','Copy bug report'),box=el('textarea','rep');
   box.readOnly=true;box.hidden=true;bt.onclick=()=>report(box);
   bug.append(bt,box);
 
-  [rep,tHeard,tSent,tRel,prof,net,health,bug].forEach((t,i)=>grid.append(rise(t,i+1)));
+  [rep,tHeard,tSent,tRel,prof,net,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
   scr.append(head,page);v.append(scr);
 
   const rows=(host,list)=>{[...host.querySelectorAll('.kv')].forEach(x=>x.remove());
@@ -487,6 +516,7 @@ $('#jx').onclick=closeJoin;
 $('#modal').onclick=e=>{if(e.target===$('#modal'))closeJoin()};
 $('#jg').onclick=async()=>{const c=await joinRoom($('#jc').value);if(c){closeJoin();nav('chat',c)}};
 $('#jc').onkeydown=e=>{if(e.key==='Enter')$('#jg').click();if(e.key==='Escape')closeJoin()};
+addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#cmodal').hidden)$('#cn').click()});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
 let errShown=false;
 addEventListener('error',()=>{if(!errShown){errShown=true;toast('Something went wrong. Reload the page if it keeps happening.')}});
@@ -941,6 +971,40 @@ void handleRepeater() {
   sendJson(repeaterOn ? "{\"repeater\":true}" : "{\"repeater\":false}");
 }
 
+void handleLeave() {
+  char room[ROOM_LEN + 1];
+  if (!normRoom(server.arg("room"), room)) return fail(400, "bad room");
+  int i = findRoom(room);
+  if (i >= 0) {
+    memset(&rooms[i], 0, sizeof rooms[i]);
+    saveRooms();
+    logEvent("Left chat %.5s...", room);
+  }
+  for (int k = 0; k < MAX_MSGS; k++) if (strcmp(msgs[k].room, room) == 0) msgs[k].room[0] = 0;
+  sendJson("{\"ok\":true}");
+}
+
+void handleReset() {
+  if (server.method() != HTTP_POST) return fail(405, "post only");
+  if (server.arg("confirm") != String("RESET")) return fail(400, "confirm");
+  memset(rooms, 0, sizeof rooms);
+  memset(msgs, 0, sizeof msgs);
+  memset(seenKeys, 0, sizeof seenKeys);
+  memset(txq, 0, sizeof txq);
+  memset(logLines, 0, sizeof logLines);
+  portENTER_CRITICAL(&rxMux);
+  rxHead = 0; rxTail = 0;
+  portEXIT_CRITICAL(&rxMux);
+  seenPos = 0; nextSeq = 1; logHead = 0; logCount = 0;
+  statRx = statTx = statRelay = statTxFail = statBad = statAuth = statReinit = 0;
+  statRxDrop = 0; txFailStreak = 0; lowHeapCount = 0;
+  repeaterOn = false;
+  prefs.clear();
+  restartPending = true;
+  restartAt = millis() + 800;
+  sendJson("{\"ok\":true}");
+}
+
 void handleRoot() {
   server.sendHeader("Cache-Control", "no-cache");
   server.send_P(200, "text/html", INDEX_HTML);
@@ -1005,6 +1069,8 @@ void setup() {
   server.on("/api/status", []() { Guard g; handleStatus(); });
   server.on("/api/log", []() { Guard g; handleLog(); });
   server.on("/api/repeater", []() { Guard g; handleRepeater(); });
+  server.on("/api/leave", []() { Guard g; handleLeave(); });
+  server.on("/api/reset", []() { Guard g; handleReset(); });
   server.on("/favicon.ico", []() { server.send(204); });
   server.onNotFound(handleNotFound);
   server.begin();
@@ -1025,6 +1091,7 @@ void loop() {
     processRx();
     processTx();
     healthCheck();
+    if (restartPending && (int32_t)(millis() - restartAt) >= 0) ESP.restart();
 #ifdef LED_BUILTIN
     if (ledOffAt && (int32_t)(millis() - ledOffAt) >= 0) { digitalWrite(LED_BUILTIN, HIGH); ledOffAt = 0; }
 #endif
