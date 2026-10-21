@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#12402f">
+<title>Johnify</title>
+<style>
+:root{--paper:#efe9da;--card:#f9f5ea;--ink:#15130e;--mute:#6a6454;--rule:#d6cdb8;
+  --pri:#12402f;--pritx:#f6f1e2;--acc:#e8431a;--acctx:#15130e;--acct:#b8330f;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;--sans:system-ui,-apple-system,"Segoe UI",sans-serif}
+@media(prefers-color-scheme:dark){:root{--paper:#0f110d;--card:#171a14;--ink:#efe9d9;--mute:#9b9584;--rule:#2c2f25;
+  --pri:#1d5c45;--pritx:#f4efdf;--acc:#ff5b2e;--acctx:#15130e;--acct:#ff7d55}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{display:flex;flex-direction:column;height:100dvh;background:var(--paper);color:var(--ink);font:500 16px/1.45 var(--sans)}
+button,input,textarea{font:inherit;color:inherit}
+svg{display:block}
+:focus-visible{outline:3px solid var(--acc);outline-offset:2px}
+header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;padding-top:max(10px,env(safe-area-inset-top));border-bottom:2px solid var(--ink)}
+.mark{flex:1;min-width:0;display:flex;align-items:center;gap:8px}
+.word{font:400 30px/1 var(--serif);letter-spacing:-.01em}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--mute)}
+.dot.on{background:#2e8b57}.dot.off{background:var(--acc)}
+.btn{border:2px solid var(--ink);background:transparent;border-radius:8px;padding:9px 12px;font:700 13px/1 var(--sans);cursor:pointer;white-space:nowrap}
+.btn:active{transform:translateY(1px)}
+.btn.pri{background:var(--pri);border-color:var(--pri);color:var(--pritx)}
+.btn.warn{background:var(--acc);border-color:var(--acc);color:var(--acctx)}
+.btn.wide{width:100%;padding:14px;font-size:14px}
+.icon{flex:none;width:38px;height:38px;border:2px solid var(--ink);border-radius:8px;background:none;display:grid;place-items:center;cursor:pointer}
+.icon.on{background:var(--ink);color:var(--paper)}
+@media(max-width:380px){.word{font-size:28px}.btn{padding:9px 9px;font-size:12px}.icon{width:34px;height:34px}}
+#warn{flex:none;padding:8px 14px;background:var(--acc);color:var(--acctx);font:700 13px/1.35 var(--sans)}
+#warn[hidden]{display:none}
+#view{flex:1;min-height:0;display:flex;flex-direction:column}
+.scr{flex:1;min-height:0;display:flex;flex-direction:column}
+.list{flex:1;overflow-y:auto;display:flex;flex-direction:column;padding:16px 14px 24px}
+.lhead{display:flex;align-items:flex-end;justify-content:space-between;border-bottom:2px solid var(--ink);padding-bottom:6px}
+.lhead h1{margin:0;font:400 50px/.9 var(--serif);letter-spacing:-.02em}
+.lhead .n{font:800 13px var(--sans);letter-spacing:.1em;color:var(--acct)}
+.row{display:grid;grid-template-columns:46px 1fr auto;gap:8px;align-items:center;padding:14px 0;border-bottom:1px solid var(--rule);cursor:pointer}
+.row:active{background:var(--card)}
+.idx{font:400 32px/1 var(--serif);color:var(--acct)}
+.rt{min-width:0}
+.rcode{font:800 17px var(--sans);letter-spacing:.1em}
+.rprev{color:var(--mute);font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.un .rprev{color:var(--ink);font-weight:700}
+.rside{text-align:right;min-width:44px}
+.rtime{font:600 12px var(--sans);color:var(--mute)}
+.badge{display:inline-block;margin-top:4px;min-width:22px;padding:2px 7px;border-radius:4px;background:var(--acc);color:var(--acctx);font:800 12px var(--sans);text-align:center}
+.empty{margin-top:auto;padding-top:20px}
+.empty h1{margin:0 0 14px;font:400 clamp(48px,16vw,76px)/.9 var(--serif);letter-spacing:-.03em}
+.lead{margin:0 0 24px;color:var(--mute);max-width:30ch}
+.steps{list-style:none;margin:0;padding:0;border-top:2px solid var(--ink)}
+.steps li{display:grid;grid-template-columns:54px 1fr;align-items:baseline;padding:12px 0;border-bottom:1px solid var(--rule)}
+.steps b{font:400 40px/1 var(--serif);color:var(--acct)}
+.steps span{font-weight:700}
+.chead{flex:none;display:flex;align-items:center;gap:8px;padding:8px 12px 8px 6px;background:var(--pri);color:var(--pritx)}
+.chead .icon{border-color:transparent;color:var(--pritx)}
+.cmid{flex:1;min-width:0;display:flex;flex-direction:column;align-items:flex-start;background:none;border:0;padding:0;text-align:left;cursor:pointer}
+.clab{font:800 10px var(--sans);letter-spacing:.16em;text-transform:uppercase;opacity:.75}
+.ccode{font:800 19px/1.1 var(--sans);letter-spacing:.12em}
+.leave{background:none;border:0;padding:6px 4px;font:700 13px var(--sans);text-decoration:underline;text-underline-offset:3px;cursor:pointer}
+.encl{flex:none;display:flex;align-items:center;gap:6px;padding:6px 14px;border-bottom:1px solid var(--rule);font:700 11px var(--sans);letter-spacing:.04em;color:var(--mute)}
+.msgs{flex:1;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:8px;padding:14px}
+.hint{margin:auto;color:var(--mute);font:400 24px var(--serif)}
+.b{max-width:82%;padding:9px 12px 7px;border-radius:12px;word-break:break-word}
+.b.g{margin-top:-5px}
+.b.me{align-self:flex-end;background:var(--pri);color:var(--pritx);border-bottom-right-radius:3px}
+.b.them{align-self:flex-start;background:var(--card);border:1.5px solid var(--ink);border-bottom-left-radius:3px}
+.who{margin-bottom:2px;font:800 11px var(--sans);letter-spacing:.08em;text-transform:uppercase}
+.tx{white-space:pre-wrap}
+.tm{margin-top:2px;font:600 11px var(--sans);opacity:.6;text-align:right}
+.comp{flex:none;display:flex;align-items:flex-end;gap:8px;padding:10px 12px;padding-bottom:max(10px,env(safe-area-inset-bottom));border-top:2px solid var(--ink)}
+.inbox{flex:1;position:relative}
+textarea{display:block;width:100%;min-height:44px;max-height:120px;resize:none;border:2px solid var(--ink);border-radius:8px;background:var(--card);padding:10px 12px;font:500 16px/1.35 var(--sans)}
+.cnt{position:absolute;right:2px;top:-21px;font:800 11px var(--sans);color:var(--mute)}
+.cnt.over{color:var(--acct)}
+.send{flex:none;width:48px;height:44px;border:2px solid var(--ink);border-radius:8px;background:var(--acc);color:var(--acctx);display:grid;place-items:center;cursor:pointer}
+.send:disabled{opacity:.5}
+.page{flex:1;overflow-y:auto;padding:16px 14px 30px}
+.ptitle{margin:0 0 14px;padding-bottom:6px;border-bottom:2px solid var(--ink);font:400 50px/.9 var(--serif);letter-spacing:-.02em}
+.bento{display:grid;grid-template-columns:1.35fr 1fr;gap:10px}
+.tile{min-width:0;padding:14px;border:2px solid var(--ink);border-radius:10px;background:var(--card)}
+.tile.dark{background:var(--pri);border-color:var(--pri);color:var(--pritx)}
+.tile.wide{grid-column:1/-1}
+.tile.tall{grid-row:span 2;display:flex;flex-direction:column;justify-content:space-between}
+.tile h3{margin:0 0 6px;font:400 28px/1 var(--serif)}
+.tile p{margin:0 0 12px;font-size:14px;opacity:.85}
+.tl{font:800 10px var(--sans);letter-spacing:.14em;text-transform:uppercase;opacity:.7}
+.num{font:400 38px/1 var(--serif);letter-spacing:-.02em;overflow-wrap:anywhere}
+.tall .num{font-size:58px}
+.kv{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--rule);font-size:14px}
+.kv span{color:var(--mute)}
+.kv b{font-weight:700;text-align:right;word-break:break-all}
+.kv b.warnv{color:var(--acct)}
+.rrow{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}
+.switch{position:relative;flex:none;width:60px;height:34px}
+.switch input{position:absolute;inset:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;z-index:1}
+.knob{position:absolute;inset:0;border:2px solid currentColor;border-radius:8px}
+.knob:after{content:"";position:absolute;top:4px;left:4px;width:22px;height:22px;border-radius:4px;background:currentColor;transition:transform .15s}
+.switch input:checked+.knob{background:var(--acc);border-color:var(--acc);color:var(--acctx)}
+.switch input:checked+.knob:after{transform:translateX(26px)}
+.field{width:100%;margin:2px 0 12px;padding:6px 0;border:0;border-bottom:2px solid var(--ink);border-radius:0;background:none;font:700 18px var(--sans);outline:none}
+.rep{width:100%;height:170px;margin-top:12px;font:500 12px/1.4 ui-monospace,Menlo,Consolas,monospace}
+#modal,#cmodal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,9,6,.6)}
+#modal[hidden],#cmodal[hidden]{display:none}
+.box{width:100%;max-width:340px;padding:20px;border:2px solid var(--ink);border-radius:10px;background:var(--paper)}
+.box h3{margin:0 0 4px;font:400 36px/1 var(--serif)}
+.box p{margin:0;color:var(--mute);font-size:14px}
+.box input{width:100%;margin:14px 0;padding:12px;border:2px solid var(--ink);border-radius:8px;background:var(--card);text-align:center;font:800 20px var(--sans);letter-spacing:.14em;text-transform:uppercase;outline:none}
+.acts{display:flex;gap:8px}.acts .btn{flex:1;padding:13px}
+#toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);max-width:90%;padding:10px 16px;border-radius:6px;background:var(--ink);color:var(--paper);font:700 13px/1.35 var(--sans);text-align:center;opacity:0;pointer-events:none;transition:opacity .2s}
+#toast.on{opacity:1}
+.boot .rise{animation:rise .6s cubic-bezier(.2,.7,.2,1) both;animation-delay:calc(var(--i,0) * 60ms)}
+@keyframes rise{from{opacity:0;transform:translateY(14px)}}
+@media(prefers-reduced-motion:reduce){.boot .rise{animation:none}}
+</style></head><body class="boot">
+<header>
+ <div class="mark"><span class="word">Johnify</span><span id="dot" class="dot"></span></div>
+ <button id="bCreate" class="btn pri">Create chat</button>
+ <button id="bJoin" class="btn">Join</button>
+ <button id="bSet" class="icon" aria-label="Settings"></button>
+</header>
+<div id="warn" hidden role="alert"></div>
+<main id="view"></main>
+<div id="modal" hidden><div class="box" role="dialog" aria-modal="true" aria-labelledby="mt">
+ <h3 id="mt">Join a chat</h3>
+ <p>Type the 10-character code you were given.</p>
+ <input id="jc" maxlength="12" placeholder="CODE" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Chat code">
+ <div class="acts"><button id="jx" class="btn">Cancel</button><button id="jg" class="btn pri">Join</button></div>
+</div></div>
+<div id="cmodal" hidden><div class="box" role="alertdialog" aria-modal="true" aria-labelledby="ct" aria-describedby="cp">
+ <h3 id="ct"></h3>
+ <p id="cp"></p>
+ <div class="acts" style="margin-top:16px"><button id="cn" class="btn">Cancel</button><button id="cy" class="btn warn"></button></div>
+</div></div>
+<div id="toast" role="status"></div>
+<script>
+const $=s=>document.querySelector(s);
+const el=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+const bytes=s=>new TextEncoder().encode(s).length;
+const fmtUp=s=>{s=Math.max(0,s|0);const d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return(d?d+'d ':'')+h+'h '+m+'m'};
+const fmtTime=t=>{try{return new Date(t).toLocaleTimeString([],{hour:'numeric',minute:'2-digit'})}catch(e){return''}};
+const fmtCode=c=>c.slice(0,5)+' '+c.slice(5);
+const ROOMRE=/^[A-Z0-9]{10}$/;
+const ICON={
+  back:'<path d="M15 5l-7 7 7 7"/>',
+  lock:'<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+  up:'<path d="M12 19V5M6 11l6-6 6 6"/>',
+  sliders:'<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'};
+const svg=(n,s)=>'<svg viewBox="0 0 24 24" width="'+s+'" height="'+s+'" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+ICON[n]+'</svg>';
+const DARK=matchMedia('(prefers-color-scheme:dark)');
+const PAL=['#b8330f','#2f6b52','#8a6a12','#3c5a7a','#6b4a2b'],PALD=['#ff7d55','#6cc09a','#e0c060','#7fb0d8','#d0a070'];
+const colorOf=s=>{let h=0;for(const c of s)h=(h*31+c.charCodeAt(0))>>>0;return(DARK.matches?PALD:PAL)[h%5]};
+
+let S={};
+try{S=JSON.parse(localStorage.getItem('jf')||'{}')}catch(e){S={}}
+(function(){
+  if(!S||typeof S!=='object'||Array.isArray(S))S={};
+  S.rooms=(Array.isArray(S.rooms)?S.rooms:[]).filter(c=>typeof c==='string'&&ROOMRE.test(c)).slice(0,12);
+  if(!S.msgs||typeof S.msgs!=='object')S.msgs={};
+  for(const k of Object.keys(S.msgs))if(!S.rooms.includes(k)||!Array.isArray(S.msgs[k]))delete S.msgs[k];
+  if(!S.unread||typeof S.unread!=='object')S.unread={};
+  S.since=Number.isInteger(S.since)&&S.since>=0?S.since:0;
+  for(const k of['name','boot','dev','ssid'])if(typeof S[k]!=='string')S[k]='';
+})();
+let storeOK=true;
+const save=()=>{try{localStorage.setItem('jf',JSON.stringify(S))}catch(e){
+  if(storeOK){storeOK=false;setTimeout(()=>toast('This browser cannot save chats. History is lost when you close the page.'),0)}}};
+
+let cur=null,view='list',busy=false,again=false,fails=0,sending=false,stT=null;
+const MSG={'bad room':'That chat code is not valid.','bad dev':'Your phone ID is missing. Reload the page.','empty':'Type a message first.',
+  'crypto':'The board could not encrypt that message.','radio busy':'The radio is busy. Try again in a moment.'};
+const why=e=>e&&e.net?(e.message==='timeout'?'The board is not answering.':'Cannot reach the board. Check your Wi-Fi.'):((e&&MSG[e.message])||'Board error: '+((e&&e.message)||'unknown'));
+
+function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),3000)}
+function ask(title,text,okLabel){
+  return new Promise(res=>{
+    const m=$('#cmodal'),y=$('#cy'),n=$('#cn');
+    $('#ct').textContent=title;$('#cp').textContent=text;y.textContent=okLabel;m.hidden=false;
+    const done=v=>{m.hidden=true;y.onclick=n.onclick=m.onclick=null;res(v)};
+    y.onclick=()=>done(true);n.onclick=()=>done(false);m.onclick=e=>{if(e.target===m)done(false)};
+    n.focus()})}
+function setLink(ok){
+  $('#dot').className='dot '+(ok?'on':'off');$('#dot').title=ok?'Connected to the board':'Not connected';
+  if(ok){fails=0;$('#warn').hidden=true;return}
+  if(++fails>=2){const w=$('#warn');w.textContent='No connection to the board. Join the Wi-Fi network '+(S.ssid||'Johnify-XXXX')+' and keep this page open.';w.hidden=false}}
+
+async function api(p,o,post){
+  const q=new URLSearchParams(o||{}),c=new AbortController(),t=setTimeout(()=>c.abort(),5000);
+  try{
+    const r=post?await fetch(p,{method:'POST',body:q,signal:c.signal}):await fetch(p+'?'+q,{signal:c.signal});
+    if(!r.ok){const e=new Error((await r.text()).trim().slice(0,80)||'HTTP '+r.status);e.board=true;throw e}
+    try{return await r.json()}catch(e){const n=new Error('offline');n.net=true;throw n}
+  }catch(e){
+    if(e.board||e.net)throw e;
+    const n=new Error(e.name==='AbortError'?'timeout':'offline');n.net=true;throw n;
+  }finally{clearTimeout(t)}}
+
+async function hello(){const h=await api('/api/hello',{dev:/^[0-9a-f]{8}$/.test(S.dev)?S.dev:''});S.dev=h.dev;S.ssid=h.ssid||S.ssid;save();return h}
+function gen(){
+  const A='ABCDEFGHJKMNPQRSTUVWXYZ23456789',a=new Uint8Array(10);
+  if(window.crypto&&crypto.getRandomValues)crypto.getRandomValues(a);else for(let i=0;i<10;i++)a[i]=Math.random()*256;
+  return[...a].map(x=>A[x%A.length]).join('')}
+function copy(t){let ok=false;try{const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();ok=document.execCommand('copy');a.remove()}catch(e){}
+  toast(ok?'Code copied':'Code: '+t)}
+
+async function joinRoom(raw){
+  const code=(raw||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(code.length!==10){toast('A chat code is 10 letters and numbers.');return null}
+  if(!S.rooms.includes(code)&&S.rooms.length>=12){toast('You can have up to 12 chats. Leave one first.');return null}
+  try{if(!S.dev)await hello();await api('/api/join',{room:code},true)}catch(e){toast(why(e));return null}
+  if(!S.rooms.includes(code)){S.rooms.push(code);S.msgs[code]=S.msgs[code]||[];save()}
+  try{const j=await api('/api/poll',{since:0,boot:'',r:code});ingest(j.msgs)}catch(e){}
+  return code}
+
+function ingest(ms){
+  if(!Array.isArray(ms))return;
+  let changed=false;
+  for(const m of ms){
+    if(!m||typeof m.r!=='string'||typeof m.d!=='string'||typeof m.i!=='string'||!S.rooms.includes(m.r))continue;
+    const L=S.msgs[m.r]=S.msgs[m.r]||[],id=m.d+m.i;
+    if(L.some(x=>x.id===id))continue;
+    L.push({id,dev:m.d,name:String(m.n||''),text:String(m.x||''),t:Date.now()-(Number(m.a)||0)*1000,mine:m.d===S.dev});
+    L.sort((a,b)=>a.t-b.t);if(L.length>300)L.shift();
+    changed=true;
+    if(!(view==='chat'&&cur===m.r)&&m.d!==S.dev)S.unread[m.r]=(S.unread[m.r]||0)+1}
+  if(changed){save();if(view==='chat')drawMsgs();else if(view==='list')render()}}
+
+async function poll(){
+  if(busy){again=true;return}
+  busy=true;
+  try{
+    if(!S.dev)await hello();
+    const j=await api('/api/poll',{since:S.since,boot:S.boot,r:S.rooms.join(',')});
+    if(typeof j.boot!=='string'||!Number.isInteger(j.next))throw Object.assign(new Error('offline'),{net:true});
+    S.boot=j.boot;S.since=j.next;ingest(j.msgs);save();setLink(true)}
+  catch(e){setLink(false)}
+  busy=false;
+  if(again){again=false;poll()}}
+async function tick(){if(!document.hidden)await poll();setTimeout(tick,fails>=3?4000:1500)}
+
+async function send(){
+  const box=$('#txt');if(!box||!cur||sending)return;
+  const t=box.value.trim();if(!t)return;
+  if(bytes(t)>190){toast('Too long. The limit is 190 bytes.');return}
+  sending=true;const sb=$('#sendb');if(sb)sb.disabled=true;
+  box.value='';box.style.height='auto';count();
+  try{
+    if(!S.dev)await hello();
+    await api('/api/send',{room:cur,dev:S.dev,name:S.name||('User-'+S.dev.slice(0,4)),text:t},true);
+    poll()}
+  catch(e){box.value=t;count();toast(why(e))}
+  sending=false;if(sb)sb.disabled=false}
+function count(){
+  const b=$('#txt'),c=$('#cnt');if(!b||!c)return;
+  const left=190-bytes(b.value);
+  c.hidden=left>40;c.textContent=left>=0?left+' left':(-left)+' too long';c.className='cnt'+(left<0?' over':'')}
+
+async function leaveRoom(code){
+  S.rooms=S.rooms.filter(x=>x!==code);delete S.msgs[code];delete S.unread[code];save();
+  if(view==='chat'&&cur===code)nav('list');
+  for(let n=0;busy&&n<20;n++)await new Promise(r=>setTimeout(r,50));
+  try{await api('/api/leave',{room:code},true);toast('You left the chat.')}
+  catch(e){toast('You left the chat on this phone, but the board could not be reached.')}}
+async function resetBoard(){
+  if(!await ask('Reset this board?','This erases every chat, message and setting on this board and on this phone, then restarts the board. It cannot be undone.','Reset board'))return;
+  try{await api('/api/reset',{confirm:'RESET'},true)}catch(e){toast(why(e));return}
+  S.rooms=[];S.msgs={};S.unread={};S.since=0;S.boot='';S.dev='';S.name='';save();
+  toast('Board reset. It restarts in a few seconds.');nav('list')}
+function nav(v,c){
+  if(v===view&&c===cur)return;
+  try{history.pushState({v,c:c||null},'')}catch(e){}
+  view=v;cur=c||null;if(v==='chat'){S.unread[c]=0;save()}render()}
+function back(){if(history.state&&history.state.v&&history.state.v!=='list')history.back();else nav('list')}
+addEventListener('popstate',e=>{
+  const s=e.state||{v:'list'};view=s.v||'list';cur=s.c||null;
+  if(view==='chat'&&!S.rooms.includes(cur)){view='list';cur=null}
+  render()});
+try{history.replaceState({v:'list',c:null},'')}catch(e){}
+
+function render(){
+  $('#bSet').classList.toggle('on',view==='settings');
+  clearInterval(stT);
+  const v=$('#view');v.innerHTML='';
+  if(view==='chat'&&!S.rooms.includes(cur)){view='list';cur=null}
+  if(view==='list')drawList(v);else if(view==='chat')drawChat(v);else drawSettings(v)}
+function backBtn(){const b=el('button','icon');b.innerHTML=svg('back',22);b.setAttribute('aria-label','Back');b.onclick=back;return b}
+const rise=(e,i)=>{e.classList.add('rise');e.style.setProperty('--i',i);return e};
+
+function drawList(v){
+  const scr=el('div','scr'),list=el('div','list');
+  if(!S.rooms.length){
+    const e=el('div','empty');
+    e.append(rise(el('h1',0,'No chats yet.'),0),rise(el('p','lead','Johnify sends messages from board to board by radio. No internet, no router.'),1));
+    const ol=el('ol','steps');
+    ['Press Create chat to get a 10-character code.','Give the code to the other person.','They press Join and type it in.']
+      .forEach((x,i)=>{const li=el('li');li.append(el('b',0,String(i+1)),el('span',0,x));ol.append(rise(li,i+2))});
+    e.append(ol);list.append(e);scr.append(list);v.append(scr);return}
+  const h=el('div','lhead');h.append(el('h1',0,'Chats'),el('span','n',String(S.rooms.length).padStart(2,'0')));
+  list.append(rise(h,0));
+  S.rooms.slice().reverse().forEach((code,i)=>{
+    const L=S.msgs[code]||[],last=L[L.length-1],r=el('div','row'+(S.unread[code]?' un':'')),mid=el('div','rt'),side=el('div','rside');
+    r.setAttribute('role','button');r.tabIndex=0;
+    mid.append(el('div','rcode',fmtCode(code)),el('div','rprev',last?(last.mine?'You: ':'')+last.text:'No messages yet'));
+    if(last)side.append(el('div','rtime',fmtTime(last.t)));
+    if(S.unread[code])side.append(el('span','badge',S.unread[code]));
+    r.append(el('div','idx',String(i+1).padStart(2,'0')),mid,side);
+    r.onclick=()=>nav('chat',code);
+    r.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();nav('chat',code)}};
+    list.append(rise(r,i+1))});
+  scr.append(list);v.append(scr)}
+
+function drawChat(v){
+  const scr=el('div','scr'),head=el('div','chead'),mid=el('button','cmid');
+  mid.append(el('span','clab','Chat code'),el('span','ccode',fmtCode(cur)));mid.onclick=()=>copy(cur);mid.setAttribute('aria-label','Copy chat code');
+  const lv=el('button','leave','Leave');
+  lv.onclick=async()=>{const code=cur;
+    if(await ask('Leave this chat?','It is removed from this phone, its saved messages are deleted, and the board stops keeping it. You can join again later with the code '+fmtCode(code)+'.','Leave'))leaveRoom(code)};
+  head.append(backBtn(),mid,lv);
+  const enc=el('div','encl');enc.innerHTML=svg('lock',12)+'<span>END-TO-END ENCRYPTED. TAP THE CODE TO COPY IT.</span>';
+  const m=el('div','msgs');m.id='msgs';
+  const f=el('div','comp'),ib=el('div','inbox'),t=el('textarea'),cn=el('span','cnt');
+  t.id='txt';t.rows=1;t.placeholder='Write a message';t.setAttribute('aria-label','Message');cn.id='cnt';cn.hidden=true;
+  t.oninput=()=>{t.style.height='auto';t.style.height=Math.min(t.scrollHeight,120)+'px';count()};
+  t.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}};
+  const s=el('button','send');s.id='sendb';s.innerHTML=svg('up',22);s.setAttribute('aria-label','Send');s.onclick=send;
+  ib.append(cn,t);f.append(ib,s);scr.append(head,enc,m,f);v.append(scr);drawMsgs(true)}
+
+function drawMsgs(force){
+  const m=$('#msgs');if(!m)return;
+  const stick=force||m.scrollHeight-m.scrollTop-m.clientHeight<90;
+  m.innerHTML='';
+  const L=S.msgs[cur]||[];
+  if(!L.length)m.append(el('div','hint','Nothing here yet.'));
+  let prev=null;
+  for(const x of L){
+    const grp=prev&&prev.dev===x.dev&&x.t-prev.t<120000;
+    const b=el('div','b '+(x.mine?'me':'them')+(grp?' g':''));
+    if(!x.mine&&!grp){const w=el('div','who',x.name||'?');w.style.color=colorOf(x.dev||'');b.append(w)}
+    b.append(el('div','tx',x.text),el('div','tm',fmtTime(x.t)));
+    m.append(b);prev=x}
+  if(stick)m.scrollTop=m.scrollHeight}
+
+async function report(box){
+  try{
+    const[s,l]=await Promise.all([api('/api/status'),api('/api/log')]);
+    box.value=['Johnify bug report','Firmware: '+s.ver+'   Chip: '+s.chip+'   SDK: '+s.sdk,
+      'Uptime: '+fmtUp(s.up)+'   Channel: '+s.ch+'   Max hops: '+s.hops+'   Repeater: '+(s.repeater?'on':'off'),
+      'Memory: '+Math.round(s.heap/1024)+' KB free, lowest '+Math.round(s.minHeap/1024)+' KB',
+      'Packets: heard '+s.rx+', sent '+s.tx+', relayed '+s.relayed,
+      'Problems: dropped '+s.rxDrop+', send failures '+s.txFail+', rejected '+s.bad+', failed checks '+s.auth+', radio resets '+s.reinit,
+      'Phones: '+s.clients+'   Chats on board: '+s.rooms,'Browser: '+navigator.userAgent,'','Recent events:']
+      .concat(l.log.length?l.log:['(none)']).join('\n');
+    box.hidden=false;box.focus();box.select();
+    let ok=false;try{ok=document.execCommand('copy')}catch(e){}
+    toast(ok?'Bug report copied. Paste it where you need it.':'Could not copy automatically. Select the text and copy it.')
+  }catch(e){toast(why(e))}}
+
+function drawSettings(v){
+  const scr=el('div','scr'),head=el('div','chead'),ttl=el('div','cmid');
+  ttl.append(el('span','clab','Johnify'),el('span','ccode','Settings'));ttl.style.cursor='default';ttl.lastChild.style.letterSpacing='.04em';
+  head.append(backBtn(),ttl);
+  const page=el('div','page'),grid=el('div','bento');
+  page.append(rise(el('h1','ptitle','Settings'),0),grid);
+
+  const rep=el('div','tile dark wide'),rr=el('div','rrow'),rl=el('div');
+  rl.append(el('h3',0,'Repeater'),el('p',0,'Re-sends every message this board hears from other boards, for any chat, to bridge boards too far apart to hear each other. A repeater cannot read what it passes on.'));
+  const sw=el('label','switch'),cb=el('input');cb.type='checkbox';cb.setAttribute('aria-label','Repeater mode');sw.append(cb,el('span','knob'));
+  cb.onchange=async()=>{try{await api('/api/repeater',{on:cb.checked?1:0},true);toast(cb.checked?'Repeater on':'Repeater off')}
+    catch(e){cb.checked=!cb.checked;toast(why(e))}};
+  rr.append(rl,sw);rep.append(rr);
+
+  const stat=(cls,label)=>{const t=el('div','tile '+cls),n=el('div','num','-');t.append(el('div','tl',label),n);return[t,n]};
+  const[tHeard,nHeard]=stat('tall','Packets heard'),[tSent,nSent]=stat('','Sent'),[tRel,nRel]=stat('','Relayed');
+
+  const prof=el('div','tile wide');
+  const nm=el('input','field');nm.placeholder='Your name';nm.maxLength=12;nm.value=S.name;nm.setAttribute('aria-label','Display name');
+  nm.oninput=()=>{S.name=nm.value.trim();save()};
+  const kvl=(k,x)=>{const d=el('div','kv');d.append(el('span',0,k),el('b',0,String(x)));return d};
+  prof.append(el('div','tl','Profile'),nm,kvl('Device ID',S.dev||'-'));
+
+  const net=el('div','tile wide'),health=el('div','tile wide');
+  net.append(el('h3',0,'This board'));health.append(el('h3',0,'Health'));
+
+  const rst=el('div','tile wide'),rb=el('button','btn wide warn','Reset board');
+  rst.append(el('h3',0,'Start over'),el('p',0,'Erases every chat, message and setting on this board and on this phone, then restarts the board so it behaves like freshly uploaded firmware. Other phones keep their own copies.'),rb);
+  rb.onclick=resetBoard;
+  const bug=el('div','tile wide'),bt=el('button','btn wide','Copy bug report'),box=el('textarea','rep');
+  box.readOnly=true;box.hidden=true;bt.onclick=()=>report(box);
+  bug.append(bt,box);
+
+  [rep,tHeard,tSent,tRel,prof,net,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
+  scr.append(head,page);v.append(scr);
+
+  const rows=(host,list)=>{[...host.querySelectorAll('.kv')].forEach(x=>x.remove());
+    for(const[k,x,bad]of list){const d=kvl(k,x);if(bad)d.lastChild.className='warnv';host.append(d)}};
+  const update=async()=>{
+    try{
+      const s=await api('/api/status');cb.checked=!!s.repeater;
+      nHeard.textContent=s.rx;nSent.textContent=s.tx;nRel.textContent=s.relayed;
+      rows(net,[['Wi-Fi network',s.ssid],['Phones connected',s.clients],['Chats stored',s.rooms],['Channel',s.ch],['Uptime',fmtUp(s.up)]]);
+      rows(health,[['Firmware',s.ver],['Free memory',Math.round(s.heap/1024)+' KB',s.heap<30000],['Packets dropped (busy)',s.rxDrop,s.rxDrop>0],
+        ['Failed sends',s.txFail,s.txFail>0],['Rejected packets',s.bad+s.auth],['Radio restarts',s.reinit,s.reinit>0]]);
+    }catch(e){}};
+  update();stT=setInterval(update,2500)}
+
+$('#bSet').innerHTML=svg('sliders',22);
+$('#bSet').onclick=()=>{if(view==='settings')back();else nav('settings')};
+$('#bCreate').onclick=async()=>{const c=await joinRoom(gen());if(c){nav('chat',c);toast('Chat created. Share the code.')}};
+const openJoin=()=>{$('#modal').hidden=false;$('#jc').value='';$('#jc').focus()},closeJoin=()=>{$('#modal').hidden=true};
+$('#bJoin').onclick=openJoin;
+$('#jx').onclick=closeJoin;
+$('#modal').onclick=e=>{if(e.target===$('#modal'))closeJoin()};
+$('#jg').onclick=async()=>{const c=await joinRoom($('#jc').value);if(c){closeJoin();nav('chat',c)}};
+$('#jc').onkeydown=e=>{if(e.key==='Enter')$('#jg').click();if(e.key==='Escape')closeJoin()};
+addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#cmodal').hidden)$('#cn').click()});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
+let errShown=false;
+addEventListener('error',()=>{if(!errShown){errShown=true;toast('Something went wrong. Reload the page if it keeps happening.')}});
+addEventListener('unhandledrejection',()=>{if(!errShown){errShown=true;toast('Something went wrong. Reload the page if it keeps happening.')}});
+
+render();setTimeout(()=>document.body.classList.remove('boot'),1400);
+hello().catch(()=>{});tick();
+</script></body></html>
