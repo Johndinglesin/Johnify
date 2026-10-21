@@ -47,7 +47,7 @@ LED_ACTIVE_LOW = True        # True if the LED lights when the pin is low (XIAO 
 USE_WATCHDOG = True          # Reboot automatically if the program freezes. Turn off while developing over USB.
 PAGE_FILE = "main.py"        # File the web page is read from. Leave as is unless you rename this file.
 
-VERSION = "1.2.0-mp"
+VERSION = "1.3.0-mp"
 LOG_LINES = 16
 HDR = 32
 HDR_FMT = "<2sB8sII12sB"
@@ -69,6 +69,7 @@ en = None
 nvs = None
 led = None
 led_off_at = None
+restart_at = None
 wdt = None
 repeater_on = False
 saved_rooms = ""
@@ -526,8 +527,67 @@ def h_repeater(q):
     return j({"repeater": repeater_on})
 
 
+def h_leave(q):
+    code = norm_room(q.get("room", ""))
+    if code is None:
+        return fail(400, "bad room")
+    if code in rooms or code in pending:
+        log("Left chat %s..." % code[:5])
+    rooms.pop(code, None)
+    if code in pending:
+        pending.remove(code)
+    msgs[:] = [m for m in msgs if m[4] != code]
+    save_rooms()
+    return j({"ok": True})
+
+
+def h_reset(q):
+    global repeater_on, next_seq, seen_pos, stat_rx, stat_tx, stat_relay, stat_txfail, stat_bad, stat_auth
+    global stat_reinit, rxdrop_base, tx_streak, low_mem_count, min_free, log_head, log_count, saved_rooms, restart_at
+    if q.get("__method") != "POST":
+        return fail(405, "post only")
+    if q.get("confirm") != "RESET":
+        return fail(400, "confirm")
+    rooms.clear()
+    del pending[:]
+    del msgs[:]
+    del txq[:]
+    seen_set.clear()
+    for i in range(SEEN_SIZE):
+        seen_ring[i] = None
+    for i in range(LOG_LINES):
+        LOG[i] = ""
+    next_seq = 1
+    seen_pos = 0
+    log_head = 0
+    log_count = 0
+    stat_rx = stat_tx = stat_relay = stat_txfail = stat_bad = stat_auth = stat_reinit = 0
+    tx_streak = 0
+    low_mem_count = 0
+    min_free = 1 << 30
+    repeater_on = False
+    try:
+        rxdrop_base = en.stats()[4]
+    except Exception:
+        rxdrop_base = 0
+    if nvs is not None:
+        for key in ("rooms", "rep"):
+            try:
+                nvs.erase_key(key)
+            except OSError:
+                pass
+        try:
+            nvs.commit()
+        except Exception:
+            pass
+    saved_rooms = ""
+    restart_at = time.ticks_add(time.ticks_ms(), 800)
+    return j({"ok": True})
+
+
 ROUTES = {"/api/hello": h_hello, "/api/join": h_join, "/api/send": h_send, "/api/poll": h_poll,
-          "/api/status": h_status, "/api/log": h_log, "/api/repeater": h_repeater}
+          "/api/status": h_status, "/api/log": h_log, "/api/repeater": h_repeater,
+          "/api/leave": h_leave, "/api/reset": h_reset}
 
 
 def unquote(s):
@@ -570,6 +630,7 @@ async def read_request(r):
     parts = line.split()
     if len(parts) < 2:
         return None
+    method = parts[0].decode()
     target = parts[1].decode()
     clen = 0
     for _ in range(40):
@@ -593,7 +654,7 @@ async def read_request(r):
             q.update(parse_qs(body.decode()))
         except UnicodeError:
             pass
-    return path, q
+    return method, path, q
 
 
 async def respond(w, code, body, ctype="text/plain", extra=""):
@@ -671,7 +732,7 @@ async def serve(r, w):
     if req is None:
         await respond(w, 400, "bad request")
         return
-    path, q = req
+    method, path, q = req
     if path == "/":
         await send_resource(w, "page", "text/html; charset=utf-8", "no-cache")
         return
@@ -683,6 +744,7 @@ async def serve(r, w):
             await respond(w, 302, "", extra="Location: http://%s/\r\n" % ap_ip)
         return
     try:
+        q["__method"] = method
         code, body, ctype = fn(q)
     except Exception as ex:
         log("Handler error: %s" % ex)
@@ -785,6 +847,8 @@ async def radio_task():
         if led_off_at is not None and time.ticks_diff(time.ticks_ms(), led_off_at) >= 0:
             led.value(1 if LED_ACTIVE_LOW else 0)
             led_off_at = None
+        if restart_at is not None and time.ticks_diff(time.ticks_ms(), restart_at) >= 0:
+            machine.reset()
         await asyncio.sleep_ms(5)
 
 
@@ -948,6 +1012,7 @@ if __name__ == "__main__":
 #|.btn{border:2px solid var(--ink);background:transparent;border-radius:8px;padding:9px 12px;font:700 13px/1 var(--sans);cursor:pointer;white-space:nowrap}
 #|.btn:active{transform:translateY(1px)}
 #|.btn.pri{background:var(--pri);border-color:var(--pri);color:var(--pritx)}
+#|.btn.warn{background:var(--acc);border-color:var(--acc);color:var(--acctx)}
 #|.btn.wide{width:100%;padding:14px;font-size:14px}
 #|.icon{flex:none;width:38px;height:38px;border:2px solid var(--ink);border-radius:8px;background:none;display:grid;place-items:center;cursor:pointer}
 #|.icon.on{background:var(--ink);color:var(--paper)}
@@ -1025,8 +1090,8 @@ if __name__ == "__main__":
 #|.switch input:checked+.knob:after{transform:translateX(26px)}
 #|.field{width:100%;margin:2px 0 12px;padding:6px 0;border:0;border-bottom:2px solid var(--ink);border-radius:0;background:none;font:700 18px var(--sans);outline:none}
 #|.rep{width:100%;height:170px;margin-top:12px;font:500 12px/1.4 ui-monospace,Menlo,Consolas,monospace}
-#|#modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,9,6,.6)}
-#|#modal[hidden]{display:none}
+#|#modal,#cmodal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,9,6,.6)}
+#|#modal[hidden],#cmodal[hidden]{display:none}
 #|.box{width:100%;max-width:340px;padding:20px;border:2px solid var(--ink);border-radius:10px;background:var(--paper)}
 #|.box h3{margin:0 0 4px;font:400 36px/1 var(--serif)}
 #|.box p{margin:0;color:var(--mute);font-size:14px}
@@ -1051,6 +1116,11 @@ if __name__ == "__main__":
 #| <p>Type the 10-character code you were given.</p>
 #| <input id="jc" maxlength="12" placeholder="CODE" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Chat code">
 #| <div class="acts"><button id="jx" class="btn">Cancel</button><button id="jg" class="btn pri">Join</button></div>
+#|</div></div>
+#|<div id="cmodal" hidden><div class="box" role="alertdialog" aria-modal="true" aria-labelledby="ct" aria-describedby="cp">
+#| <h3 id="ct"></h3>
+#| <p id="cp"></p>
+#| <div class="acts" style="margin-top:16px"><button id="cn" class="btn">Cancel</button><button id="cy" class="btn warn"></button></div>
 #|</div></div>
 #|<div id="toast" role="status"></div>
 #|<script>
@@ -1092,6 +1162,13 @@ if __name__ == "__main__":
 #|const why=e=>e&&e.net?(e.message==='timeout'?'The board is not answering.':'Cannot reach the board. Check your Wi-Fi.'):((e&&MSG[e.message])||'Board error: '+((e&&e.message)||'unknown'));
 #|
 #|function toast(t){const e=$('#toast');e.textContent=t;e.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>e.classList.remove('on'),3000)}
+#|function ask(title,text,okLabel){
+#|  return new Promise(res=>{
+#|    const m=$('#cmodal'),y=$('#cy'),n=$('#cn');
+#|    $('#ct').textContent=title;$('#cp').textContent=text;y.textContent=okLabel;m.hidden=false;
+#|    const done=v=>{m.hidden=true;y.onclick=n.onclick=m.onclick=null;res(v)};
+#|    y.onclick=()=>done(true);n.onclick=()=>done(false);m.onclick=e=>{if(e.target===m)done(false)};
+#|    n.focus()})}
 #|function setLink(ok){
 #|  $('#dot').className='dot '+(ok?'on':'off');$('#dot').title=ok?'Connected to the board':'Not connected';
 #|  if(ok){fails=0;$('#warn').hidden=true;return}
@@ -1168,6 +1245,17 @@ if __name__ == "__main__":
 #|  const left=190-bytes(b.value);
 #|  c.hidden=left>40;c.textContent=left>=0?left+' left':(-left)+' too long';c.className='cnt'+(left<0?' over':'')}
 #|
+#|async function leaveRoom(code){
+#|  S.rooms=S.rooms.filter(x=>x!==code);delete S.msgs[code];delete S.unread[code];save();
+#|  if(view==='chat'&&cur===code)nav('list');
+#|  for(let n=0;busy&&n<20;n++)await new Promise(r=>setTimeout(r,50));
+#|  try{await api('/api/leave',{room:code},true);toast('You left the chat.')}
+#|  catch(e){toast('You left the chat on this phone, but the board could not be reached.')}}
+#|async function resetBoard(){
+#|  if(!await ask('Reset this board?','This erases every chat, message and setting on this board and on this phone, then restarts the board. It cannot be undone.','Reset board'))return;
+#|  try{await api('/api/reset',{confirm:'RESET'},true)}catch(e){toast(why(e));return}
+#|  S.rooms=[];S.msgs={};S.unread={};S.since=0;S.boot='';S.dev='';S.name='';save();
+#|  toast('Board reset. It restarts in a few seconds.');nav('list')}
 #|function nav(v,c){
 #|  if(v===view&&c===cur)return;
 #|  try{history.pushState({v,c:c||null},'')}catch(e){}
@@ -1215,8 +1303,8 @@ if __name__ == "__main__":
 #|  const scr=el('div','scr'),head=el('div','chead'),mid=el('button','cmid');
 #|  mid.append(el('span','clab','Chat code'),el('span','ccode',fmtCode(cur)));mid.onclick=()=>copy(cur);mid.setAttribute('aria-label','Copy chat code');
 #|  const lv=el('button','leave','Leave');
-#|  lv.onclick=()=>{if(confirm('Remove this chat from this phone?')){
-#|    S.rooms=S.rooms.filter(x=>x!==cur);delete S.msgs[cur];delete S.unread[cur];save();nav('list')}};
+#|  lv.onclick=async()=>{const code=cur;
+#|    if(await ask('Leave this chat?','It is removed from this phone, its saved messages are deleted, and the board stops keeping it. You can join again later with the code '+fmtCode(code)+'.','Leave'))leaveRoom(code)};
 #|  head.append(backBtn(),mid,lv);
 #|  const enc=el('div','encl');enc.innerHTML=svg('lock',12)+'<span>END-TO-END ENCRYPTED. TAP THE CODE TO COPY IT.</span>';
 #|  const m=el('div','msgs');m.id='msgs';
@@ -1283,11 +1371,14 @@ if __name__ == "__main__":
 #|  const net=el('div','tile wide'),health=el('div','tile wide');
 #|  net.append(el('h3',0,'This board'));health.append(el('h3',0,'Health'));
 #|
+#|  const rst=el('div','tile wide'),rb=el('button','btn wide warn','Reset board');
+#|  rst.append(el('h3',0,'Start over'),el('p',0,'Erases every chat, message and setting on this board and on this phone, then restarts the board so it behaves like freshly uploaded firmware. Other phones keep their own copies.'),rb);
+#|  rb.onclick=resetBoard;
 #|  const bug=el('div','tile wide'),bt=el('button','btn wide','Copy bug report'),box=el('textarea','rep');
 #|  box.readOnly=true;box.hidden=true;bt.onclick=()=>report(box);
 #|  bug.append(bt,box);
 #|
-#|  [rep,tHeard,tSent,tRel,prof,net,health,bug].forEach((t,i)=>grid.append(rise(t,i+1)));
+#|  [rep,tHeard,tSent,tRel,prof,net,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
 #|  scr.append(head,page);v.append(scr);
 #|
 #|  const rows=(host,list)=>{[...host.querySelectorAll('.kv')].forEach(x=>x.remove());
@@ -1311,6 +1402,7 @@ if __name__ == "__main__":
 #|$('#modal').onclick=e=>{if(e.target===$('#modal'))closeJoin()};
 #|$('#jg').onclick=async()=>{const c=await joinRoom($('#jc').value);if(c){closeJoin();nav('chat',c)}};
 #|$('#jc').onkeydown=e=>{if(e.key==='Enter')$('#jg').click();if(e.key==='Escape')closeJoin()};
+#|addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#cmodal').hidden)$('#cn').click()});
 #|document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
 #|let errShown=false;
 #|addEventListener('error',()=>{if(!errShown){errShown=true;toast('Something went wrong. Reload the page if it keeps happening.')}});
