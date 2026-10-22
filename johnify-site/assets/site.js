@@ -1,0 +1,5 @@
+(()=>{const N=[['index.html','Overview'],['how-it-works.html','How it works'],['compare.html','Arduino vs MicroPython'],['install.html','Install'],['security.html','Security'],['changelog.html','Changelog']],
+here=location.pathname.split('/').pop()||'index.html',GH='https://github.com/Johndinglesin/Johnify';
+document.getElementById('hd').innerHTML=`<div class="w nav"><a class="logo" href="index.html"><img src="assets/logo.png" alt="" width="32" height="32">Johnify</a><button class="mb" aria-expanded="false" aria-controls="lk">Menu</button><nav id="lk" class="links" aria-label="Main">${N.map(([h,t])=>`<a href="${h}"${h===here?' aria-current="page"':''}>${t}</a>`).join('')}<a class="gh" href="${GH}">GitHub</a></nav></div>`;
+const b=document.querySelector('.mb'),l=document.getElementById('lk');b.onclick=()=>b.setAttribute('aria-expanded',l.classList.toggle('open'));
+document.getElementById('ft').innerHTML=`<div class="w"><span>Johnify is open source.</span><span><a href="${GH}">View the code on GitHub</a></span></div>`})();

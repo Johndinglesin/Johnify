@@ -1,0 +1,13 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>How it works | Johnify</title><meta name="description" content="How a Johnify message travels from one phone to another, step by step."><link rel="icon" type="image/png" href="assets/logo.png"><link rel="apple-touch-icon" href="assets/logo.png"><link rel="stylesheet" href="assets/style.css"></head>
+<body><header id="hd"></header><main>
+<div class="top"><div class="w"><h1>How it works</h1><p class="lead">One message, from your phone to your friend’s, in seven steps. Press play or choose a scene.</p>
+<div class="player"><div class="stage"><canvas id="vid" aria-label="Animated explainer of how a Johnify message travels"></canvas><div class="ctl"><button id="pp">Play</button><div class="pb" id="pb"><i id="bar"></i></div><span class="m" id="tm">0:00</span></div></div>
+<div><div class="desc" id="desc"></div><ol class="chs" id="chs"></ol></div></div></div></div>
+<section class="alt" id="packet"><div class="w"><h2>The packet</h2><p class="lead">Every message is one radio packet: a 32-byte header, the encrypted name and text, and a 16-byte tag. Type below to see it rebuild. The bytes shown are placeholders in the real layout. On a board, the body is encrypted with AES-256-GCM.</p>
+<div class="insp"><div><label for="msg" class="m" style="font-size:14px">Message</label><textarea id="msg" maxlength="190">meet at the north gate at 6</textarea><p class="m" style="font-size:14px;margin-top:8px" id="tot"></p>
+<div class="tbl stack"><table><thead><tr><th>Offset</th><th>Size</th><th>Field</th></tr></thead><tbody id="tb" class="m"></tbody></table></div></div>
+<div><div class="pk" id="pk"></div><div class="hex m" id="hex"></div><p style="color:var(--mute);font-size:15px;margin-top:12px">Header bytes are readable by anyone listening. The nonce is sent in the clear. The ciphertext holds the name and text, and the tag proves nothing was altered.</p></div></div></div></section>
+</main><footer id="ft"></footer><script src="assets/site.js"></script>
+<script src="assets/video.js"></script><script src="assets/packet.js"></script>
+</body></html>

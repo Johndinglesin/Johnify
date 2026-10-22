@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Arduino vs MicroPython | Johnify</title><meta name="description" content="How the Arduino and MicroPython versions of Johnify compare."><link rel="icon" type="image/png" href="assets/logo.png"><link rel="apple-touch-icon" href="assets/logo.png"><link rel="stylesheet" href="assets/style.css"></head>
+<body><header id="hd"></header><main>
+<div class="top"><div class="w"><h1>Arduino vs MicroPython</h1><p class="lead">Johnify ships as two firmwares. They serve the same web app, speak the same packet format and use the same encryption, so boards running either version can share chats and relay for each other.</p></div></div>
+<section class="alt"><div class="w"><h2>What is identical</h2><div class="two"><ul class="ck"><li>Wi-Fi hotspot name, captive portal and channel 1</li><li>The web app, served byte for byte</li><li>The HTTP API and its error codes</li><li>Packet layout and AES-256-GCM with the same authenticated data</li></ul>
+<ul class="ck"><li>Key derivation: 5,000 rounds of SHA-256</li><li>Duplicate suppression and 4-hop repeater limit</li><li>Limits: 24 chats per board, 190 bytes of text</li><li>Saved chat codes and repeater setting in flash</li></ul></div></div></section>
+<section><div class="w"><h2>Differences</h2><div class="tbl stack"><table><thead><tr><th>Area</th><th>Arduino</th><th>MicroPython</th></tr></thead><tbody>
+<tr><td>Files</td><td data-l="Arduino">One sketch, <code>Johnify.ino</code>, with the web app built in</td><td data-l="MicroPython">Three files: <code>main.py</code>, <code>johnify.html</code>, <code>encryption.py</code></td></tr>
+<tr><td>Boards</td><td data-l="Arduino">Written for the Seeed XIAO ESP32S3. Other ESP32 boards supported by the Arduino core should work</td><td data-l="MicroPython">ESP32, S2, S3, C3 and C6 on MicroPython 1.21 or newer</td></tr>
+<tr><td>AES-GCM</td><td data-l="Arduino">mbedTLS, well under 1 ms per message</td><td data-l="MicroPython">Built in Python on the raw AES block function, tens of milliseconds per message</td></tr>
+<tr><td>Adding a chat</td><td data-l="Arduino">Key derivation takes well under a second</td><td data-l="MicroPython">Takes about a second and briefly blocks the board</td></tr>
+<tr><td>Concurrency</td><td data-l="Arduino">FreeRTOS tasks. The web server runs in its own task so a slow phone cannot delay the radio</td><td data-l="MicroPython">One cooperative event loop. Crypto and key derivation briefly hold up other work</td></tr>
+<tr><td>Web page</td><td data-l="Arduino">Stored in flash inside the firmware (about 27 KB)</td><td data-l="MicroPython">A file read from flash in 1 KB pieces, never held in RAM, and editable on its own</td></tr>
+<tr><td>Web server</td><td data-l="Arduino">Arduino WebServer library</td><td data-l="MicroPython">Built-in HTTP/1.1 server: one request per connection, bodies up to 2 KB, 6 connections at once, 10 second limit</td></tr>
+<tr><td>Memory</td><td data-l="Arduino">Fixed-size arrays, no allocation in the radio path</td><td data-l="MicroPython">Capped lists. Under 30 KB free, the older half of history is dropped. Under 12 KB, the board reboots</td></tr>
+<tr><td>Receive queue</td><td data-l="Arduino">Own 16-packet queue</td><td data-l="MicroPython">The ESP-NOW driver buffer, set to 4 KB</td></tr>
+<tr><td>Saved chats at boot</td><td data-l="Arduino">Ready at start-up</td><td data-l="MicroPython">Loaded one by one in the background. Messages for a chat not yet loaded are not decrypted for a few seconds</td></tr>
+<tr><td>Memory statistic</td><td data-l="Arduino">True low-water mark</td><td data-l="MicroPython">Lowest value sampled every 5 seconds</td></tr>
+<tr><td>Configuration</td><td data-l="Arduino"><code>#define</code> values at the top of the sketch. <code>RXQ_SIZE</code> is Arduino only</td><td data-l="MicroPython">Variables at the top of <code>main.py</code>, plus <code>MAX_WEB_CLIENTS</code>, <code>LED_PIN</code>, <code>LED_ACTIVE_LOW</code>, <code>USE_WATCHDOG</code>, <code>PAGE_FILE</code></td></tr>
+<tr><td>Status LED</td><td data-l="Arduino">Built-in LED blinks on each packet</td><td data-l="MicroPython">Off until <code>LED_PIN</code> is set</td></tr>
+<tr><td>Version string</td><td data-l="Arduino"><code>1.3.0</code>, with the ESP-IDF version shown</td><td data-l="MicroPython"><code>1.3.0-mp</code>, with the MicroPython version shown</td></tr>
+</tbody></table></div></div></section>
+<section class="alt"><div class="w"><h2>Which to use</h2><div class="two"><div><h3>Arduino</h3><p style="color:var(--mute);margin-top:8px">Choose it if you have a XIAO ESP32S3 and want the fastest crypto and the fewest moving parts: one compiled image, fixed memory use, and a web server that runs separately from the radio.</p></div>
+<div><h3>MicroPython</h3><p style="color:var(--mute);margin-top:8px">Choose it for boards other than the XIAO, or if you want to edit and re-upload the web page and settings without recompiling. Check the memory table on the install page for your board.</p></div></div>
+<p style="color:var(--mute);margin-top:28px;font-size:15px">Cross-compatibility was verified on a computer by building real packets with both codebases and exchanging them in both directions. It has not been run on every board, and the radio has not been tested on real hardware in that check.</p></div></section>
+</main><footer id="ft"></footer><script src="assets/site.js"></script>
+</body></html>

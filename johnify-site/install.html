@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Install | Johnify</title><meta name="description" content="How to download Johnify from GitHub and install it on an ESP32 board."><link rel="icon" type="image/png" href="assets/logo.png"><link rel="apple-touch-icon" href="assets/logo.png"><link rel="stylesheet" href="assets/style.css"></head>
+<body><header id="hd"></header><main>
+<div class="top"><div class="w"><h1>Install</h1><p class="lead">You need two or more ESP32-family boards. Two is enough to test, and each extra board is another chat node or a repeater.</p></div></div>
+<section class="alt"><div class="w"><h2>1. Get the files</h2><p class="lead" style="margin-top:12px">Download or clone the Johnify repository from GitHub. Everything below runs from the root of that folder.</p>
+<div class="row"><a class="btn p" href="https://github.com/Johndinglesin/Johnify">Open the GitHub repository</a></div>
+<pre>git clone https://github.com/Johndinglesin/Johnify.git
+cd Johnify</pre></div></section>
+<section><div class="w"><h2>2. Check your board</h2><div class="tbl stack"><table><thead><tr><th>Board</th><th>MAX_ROOMS</th><th>MAX_MSGS</th></tr></thead><tbody>
+<tr><td>With PSRAM, such as XIAO ESP32S3 on a PSRAM build</td><td data-l="MAX_ROOMS">24</td><td data-l="MAX_MSGS">200</td></tr>
+<tr><td>ESP32 or ESP32-S3 without PSRAM</td><td data-l="MAX_ROOMS">8</td><td data-l="MAX_MSGS">60</td></tr>
+<tr><td>ESP32-S2 or ESP32-C3</td><td data-l="MAX_ROOMS">6</td><td data-l="MAX_MSGS">40</td></tr></tbody></table></div>
+<p style="color:var(--mute);font-size:15px;margin-top:12px">These are MicroPython settings at the top of <code>main.py</code>. Not supported: ESP8266 and Raspberry Pi Pico W, which lack the RAM or ESP-NOW.</p></div></section>
+<section class="alt"><div class="w"><h2>3. Put it on the board</h2><div class="tabs" role="tablist"><button role="tab" aria-selected="true" data-t="mp">MicroPython</button><button role="tab" aria-selected="false" data-t="ar">Arduino</button></div><pre id="code"></pre>
+<p style="color:var(--mute);font-size:15px;margin-top:12px">Replace PORT with your own serial port. The name differs per computer and can change between flashing and running, so look it up each time. For MicroPython, flash the firmware first and expect <code>fs ls</code> to list all three files. For Arduino, you can also open <code>arduino/Johnify/Johnify.ino</code> in the Arduino IDE. While developing over USB, set <code>USE_WATCHDOG = False</code>.</p></div></section>
+<section><div class="w"><h2>4. Start chatting</h2><div class="two"><ul class="ck"><li>Join the <code>Johnify-XXXX</code> Wi-Fi network on your phone</li><li>Open <code>http://192.168.4.1</code> in a browser</li><li>Press Create chat to get a 10-character code</li></ul>
+<ul class="ck"><li>Your friend joins their own board and enters the code</li><li>If the page will not load, turn off mobile data</li><li>Use the Settings page for repeater mode and diagnostics</li></ul></div></div></section>
+</main><footer id="ft"></footer><script src="assets/site.js"></script>
+<script>const C={mp:`pip install esptool mpremote
+mpremote connect <span class="p">PORT</span> cp MicroPython/main.py :main.py
+mpremote connect <span class="p">PORT</span> cp MicroPython/johnify.html :johnify.html
+mpremote connect <span class="p">PORT</span> cp MicroPython/encryption.py :encryption.py
+mpremote connect <span class="p">PORT</span> fs ls`,ar:`arduino-cli core install esp32:esp32
+arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3 arduino/Johnify
+arduino-cli upload  --fqbn esp32:esp32:XIAO_ESP32S3 -p <span class="p">PORT</span> arduino/Johnify`};
+const set=k=>{document.getElementById("code").innerHTML=C[k];document.querySelectorAll(".tabs button").forEach(b=>b.setAttribute("aria-selected",b.dataset.t===k))};
+document.querySelectorAll(".tabs button").forEach(b=>b.onclick=()=>set(b.dataset.t));set("mp")</script>
+</body></html>

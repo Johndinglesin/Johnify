@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Encrypted offline group chat | Johnify</title><meta name="description" content="Johnify is an encrypted group chat that runs on ESP32 boards with no internet, router or cell service."><link rel="icon" type="image/png" href="assets/logo.png"><link rel="apple-touch-icon" href="assets/logo.png"><link rel="stylesheet" href="assets/style.css"></head>
+<body><header id="hd"></header><main>
+<div class="top"><div class="w hero"><div>
+<h1>Encrypted group chat that runs without the internet.</h1>
+<p class="lead">Johnify turns ESP32 boards into a local chat network. Each board creates its own Wi-Fi hotspot and serves the chat app. Phones connect with a browser, and the boards relay AES-256-GCM encrypted messages to each other over radio.</p>
+<div class="row"><a class="btn p" href="install.html">Install Johnify</a><a class="btn" href="how-it-works.html">See how it works</a></div></div>
+<svg viewBox="0 0 400 240" role="img" aria-label="Two phones, each connected to its own board, with the boards linked by radio" style="width:100%;height:auto">
+<g fill="none" stroke="var(--ink)" stroke-width="2"><rect x="10" y="80" width="44" height="80" rx="8" fill="var(--bg)"/><rect x="346" y="80" width="44" height="80" rx="8" fill="var(--bg)"/></g>
+<g stroke="var(--ink)" stroke-width="2"><rect x="80" y="95" width="70" height="50" rx="4" fill="var(--pcb)"/><rect x="250" y="95" width="70" height="50" rx="4" fill="var(--pcb)"/></g>
+<rect x="102" y="108" width="26" height="24" rx="2" fill="#0b1613"/><rect x="272" y="108" width="26" height="24" rx="2" fill="#0b1613"/>
+<g stroke="var(--mute)" stroke-width="2" stroke-dasharray="4 6"><path d="M54 120H80"/><path d="M320 120H346"/><path d="M150 120H250" stroke="var(--acc)"/></g>
+<g class="mo" fill="var(--acc)"><circle r="5"><animateMotion dur="2.4s" repeatCount="indefinite" path="M150 120H250"/></circle><circle r="5"><animateMotion dur="2.4s" begin="1.2s" repeatCount="indefinite" path="M250 120H150"/></circle></g>
+<g font-family="IBM Plex Sans,sans-serif" font-size="14" text-anchor="middle" fill="var(--mute)"><text x="200" y="100" fill="var(--acc)" font-weight="500">ESP-NOW radio</text><text x="115" y="170">Wi-Fi hotspot</text><text x="285" y="170">Wi-Fi hotspot</text><text x="32" y="182">Phone</text><text x="368" y="182">Phone</text><text x="200" y="215">No internet, router or cell service</text></g></svg></div></div>
+<section class="alt"><div class="w"><h2>What it does</h2><div class="grid">
+<div class="card"><h3>Works anywhere</h3><p>No infrastructure at all. Boards talk to each other directly, and phones talk only to their nearest board.</p></div>
+<div class="card"><h3>Encrypted end to end</h3><p>Messages use AES-256-GCM with a key derived from a shared chat code. The key never leaves the board or the phone.</p></div>
+<div class="card"><h3>Extendable range</h3><p>Any board can be switched into repeater mode to relay traffic for other chats, without being able to read it.</p></div></div></div></section>
+<section><div class="w"><h2>Specifications</h2><dl class="spec">
+<div><dt>Encryption</dt><dd>AES-256-GCM, key from the chat code</dd></div><div><dt>Radio</dt><dd>ESP-NOW broadcast, 2.4 GHz, channel 1</dd></div>
+<div><dt>Packet size</dt><dd>60 bytes plus text, 250 maximum</dd></div><div><dt>Message limits</dt><dd>190 bytes of text, 12 bytes of name</dd></div>
+<div><dt>Repeater</dt><dd>Up to 4 hops</dd></div><div><dt>Capacity</dt><dd>24 chats per board, 8 phones per board</dd></div>
+<div><dt>Firmware</dt><dd>Arduino (C++) and MicroPython</dd></div><div><dt>Version</dt><dd>1.3.0</dd></div></dl></div></section>
+<section class="alt"><div class="w"><h2>Explore</h2><div class="grid">
+<a class="card" href="how-it-works.html"><h3>How it works</h3><p>A 50 second animated walkthrough and a live packet inspector.</p><span class="go">Read more</span></a>
+<a class="card" href="compare.html"><h3>Arduino vs MicroPython</h3><p>Two firmwares, one network. What is the same and what differs.</p><span class="go">Compare</span></a>
+<a class="card" href="install.html"><h3>Install</h3><p>Get the files from GitHub and put them on a board.</p><span class="go">Get started</span></a>
+<a class="card" href="security.html"><h3>Security</h3><p>What is protected, what is not, and why.</p><span class="go">Read more</span></a>
+<a class="card" href="changelog.html"><h3>Changelog</h3><p>What is in each release.</p><span class="go">View</span></a></div></div></section>
+</main><footer id="ft"></footer><script src="assets/site.js"></script>
+</body></html>
