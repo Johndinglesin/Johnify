@@ -30,7 +30,6 @@ Both serve the same web app, speak the same packet format, and use the same encr
 - [Web client](#web-client)
 - [Configuration](#configuration)
 - [Memory and limits](#memory-and-limits)
-- [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
 
 ---
