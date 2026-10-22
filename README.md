@@ -4,12 +4,12 @@ An encrypted group chat that runs on ESP32 boards with no internet, router, or c
 
 Each board runs its own Wi-Fi hotspot and serves a small chat web app. Phones connect to the nearest board with a browser. Boards pass messages to each other over ESP-NOW, a connectionless 2.4 GHz protocol built into the ESP32. Messages are encrypted with AES-256-GCM using a key derived from a shared chat code. Any board can also be switched into repeater mode to extend range.
 
-There are two implementations of the same firmware, each a single source file:
+There are two implementations of the same firmware. The Arduino version is a single source file. The MicroPython version is three small files in one folder:
 
 | Version | File | Language | Boards |
 |---------|------|----------|--------|
 | Arduino | `arduino/Johnify/Johnify.ino` | C++ | Written for the Seeed Studio **XIAO ESP32S3**. Other ESP32-family boards supported by the Arduino ESP32 core should work. |
-| MicroPython | `micropython/main.py` | Python | Any ESP32-family board (ESP32, S2, S3, C3, C6) running MicroPython 1.21 or newer. See [MicroPython version](#micropython-version). |
+| MicroPython | `MicroPython/` (`main.py`, `johnify.html`, `encryption.py`) | Python | Any ESP32-family board (ESP32, S2, S3, C3, C6) running MicroPython 1.21 or newer. See [MicroPython version](#micropython-version). |
 
 Both serve the same web app, speak the same packet format, and use the same encryption, so boards running either version can share chats and relay for each other in the same network. A test that builds packets with the actual Arduino code and the MicroPython code and exchanges them in both directions is described under [Verification](#verification).
 
@@ -27,10 +27,13 @@ Both serve the same web app, speak the same packet format, and use the same encr
 - [Duplicate suppression and repeaters](#duplicate-suppression-and-repeaters)
 - [Radio notes](#radio-notes)
 - [HTTP API](#http-api)
+- [Web client](#web-client)
 - [Configuration](#configuration)
 - [Memory and limits](#memory-and-limits)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
+- [Repository layout](#repository-layout)
+- [Verification](#verification)
 
 ---
 
@@ -74,7 +77,17 @@ Replace the port with your own (`COMx` on Windows).
 
 ## MicroPython version
 
-`micropython/main.py` is a full port of the Arduino firmware, written for a broad range of boards rather than one. It is one file, with the web app inside it, and it behaves the same way from the phone's point of view: same hotspot name, same web page (byte for byte), same HTTP API, same packet format, same key derivation, same limits.
+The `MicroPython/` folder is a full port of the Arduino firmware, written for a broad range of boards rather than one. It behaves the same way from the phone's point of view: same hotspot name, same web page (byte for byte), same HTTP API, same packet format, same key derivation, same limits.
+
+It is three files, and all three go on the board:
+
+| File | What it is |
+|------|------------|
+| `main.py` | The program: Wi-Fi hotspot, web server, radio, chats, repeater. MicroPython runs this file by itself at every power-up. |
+| `johnify.html` | The web app. It is read from flash and sent to phones in small pieces, so it is never held in RAM. |
+| `encryption.py` | Key derivation and AES-256-GCM encryption. MicroPython has no GCM mode, so this builds it. |
+
+Splitting it this way keeps memory use down. Each Python file is compiled separately, so the board never has to hold the whole program at once while loading it. The page never enters RAM. `encryption.py` can be precompiled (see Requirements). And `johnify.html` can be edited and re-uploaded on its own.
 
 ### Which boards
 
@@ -93,7 +106,7 @@ Not supported: the ESP8266 (not enough RAM), the Raspberry Pi Pico W and other R
 ### Requirements
 
 - **MicroPython 1.21 or newer** for the `espnow` module and a current `asyncio`.
-- **Keep the file named `main.py`, uncompressed and complete.** The web page is stored inside it as comment lines at the end of the file and is read back from flash when a phone asks for it. If you rename the file, set `PAGE_FILE` to the new name. Do not precompile it with `mpy-cross` and do not strip its comments, or the page is lost. If the page cannot be found the board answers with a clear message saying so, and logs it.
+- **All three files on the board, in its top-level folder, with these exact names.** If `johnify.html` is missing the board still runs but answers every page request with a message saying so. If `encryption.py` is missing the program stops at start-up and prints a message saying so. If you rename the HTML file, set `PAGE_FILE` at the top of `main.py` to match.
 - **Free RAM.** The page is not held in RAM, which is what makes small boards workable. What does use RAM is the chats (about 2 KB each) and the message history (roughly 250 to 450 bytes per message, depending on length). These are rough estimates. Suggested starting values:
 
 | Board | `MAX_ROOMS` | `MAX_MSGS` |
@@ -104,11 +117,27 @@ Not supported: the ESP8266 (not enough RAM), the Raspberry Pi Pico W and other R
 
 The program also protects itself. If free memory drops below about 30 KB it discards the older half of the message history, and only reboots if memory stays below about 12 KB.
 
+- **Optional: precompile `encryption.py`.** Running `mpy-cross encryption.py` produces `encryption.mpy`, which loads faster and needs less RAM to start. Upload `encryption.mpy` and delete `encryption.py` from the board, because if both exist MicroPython uses the `.py`. Use an `mpy-cross` that matches your MicroPython version. `main.py` has to stay a `.py` file, because MicroPython only runs `main.py` at start-up.
+
 ### Install
+
+> **The port name and number will be different on your computer.** The commands below use `/dev/ttyACM0` as a stand-in. Your serial port has a different name, and the name can change during the install, so look it up each time instead of copying the example.
+>
+> | System | What ports look like |
+> |--------|----------------------|
+> | Windows | `COM3`, `COM4`, and so on. See Device Manager, under Ports (COM & LPT). |
+> | macOS | `/dev/cu.usbmodem1101`, `/dev/cu.usbserial-0001`, and similar. List them with `ls /dev/cu.*`. |
+> | Linux | `/dev/ttyACM0`, `/dev/ttyUSB0`, and similar. List them with `ls /dev/ttyACM* /dev/ttyUSB*`. |
+>
+> The name and number change when you use a different USB socket or cable, with a different board, on a different computer, and very often when the board switches between bootloader mode (flashing) and normal mode (running). After every unplug and replug, check again. `python -m serial.tools.list_ports` lists every serial port, and `mpremote connect list` lists the boards running MicroPython.
+>
+> If only one board is plugged in you can leave out `--port` (esptool) or `connect <port>` (mpremote) entirely, and the tools find the board themselves.
+>
+> On Linux, a `Permission denied` error means your user is not allowed to use serial ports. Run `sudo usermod -aG dialout $USER`, then log out and back in.
 
 1. Download the MicroPython `.bin` for your board from the MicroPython downloads page. Pick the exact board, or the generic build for your chip. For a board with PSRAM, such as the XIAO ESP32S3, pick the build with PSRAM support (for the generic S3 build that is `ESP32_GENERIC_S3-SPIRAM_OCT`).
 2. Put the board in bootloader mode. On the XIAO, hold the **B** (boot) button while plugging in USB. Most dev boards have a BOOT button to hold while pressing EN or reset.
-3. Flash it. The start address depends on the chip:
+3. Find the port the board has in bootloader mode (see the box above), then flash it. The start address depends on the chip:
 
 | Chip | Flash offset |
 |------|--------------|
@@ -121,25 +150,81 @@ esptool.py --chip esp32s3 --port /dev/ttyACM0 erase_flash
 esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 write_flash -z 0x0 <firmware>.bin
 ```
 
-Use your own `--chip` value and offset, and your own port (`COMx` on Windows). The port name often changes after the board leaves bootloader mode.
+Use your own `--chip` value, offset and port. On newer versions of esptool the command is `esptool` instead of `esptool.py`.
 
-4. Unplug and replug the board without holding the button, then copy the program over and restart it:
+4. Unplug the board and plug it back in without holding the button. **Find the port again: it is usually different from the one in step 3.**
+5. From the root of this repository, copy the three files to the board, using your port. They must end up in the board's top-level folder with the same names:
 
 ```sh
-mpremote cp micropython/main.py :main.py
-mpremote reset
+mpremote connect /dev/ttyACM0 cp MicroPython/main.py :main.py
+mpremote connect /dev/ttyACM0 cp MicroPython/johnify.html :johnify.html
+mpremote connect /dev/ttyACM0 cp MicroPython/encryption.py :encryption.py
+mpremote connect /dev/ttyACM0 fs ls
 ```
 
-5. To watch the log, run `mpremote repl`. Log lines start with `[johnify]`. Thonny also works: save the file to the board as `main.py`.
+The last command lists the files on the board. You should see all three. In Thonny, open each file and use File, Save as, MicroPython device, keeping the same name.
 
-The program starts by itself on every power-up. Settings are variables at the top of `main.py`. Set `LED_PIN` to your board's LED pin if you want the activity light (see Configuration). It is off by default because a pin number that is an LED on one board can be something else on another.
+6. Restart the board and watch its log:
+
+```sh
+mpremote connect /dev/ttyACM0 reset
+mpremote connect /dev/ttyACM0 repl
+```
+
+Press Ctrl+] to leave the REPL. Log lines start with `[johnify]`, and you should see `Ready: Johnify-XXXX`. The program starts by itself on every power-up.
+
+Settings are variables at the top of `main.py`. Set `LED_PIN` to your board's LED pin if you want the activity light (see Configuration). It is off by default because a pin number that is an LED on one board can be something else on another.
 
 While developing over USB, set `USE_WATCHDOG = False`. The watchdog cannot be stopped once it starts, so a board you have interrupted with Ctrl-C will reboot after 30 seconds.
+
+### Removing Johnify from a board
+
+Deleting the files does not erase the chat list and repeater setting that Johnify keeps in the board's flash storage, because those are not files. Before you delete anything, open **Settings** and press **Reset board** to clear them, or use option 3 below, which erases everything. If you skip this and install Johnify again later, the old saved chats come back.
+
+Use the port the board has now (see the port box in Install). Pick one option.
+
+**Option 1: remove only Johnify's files.** `main.py` goes first on purpose. While Johnify is running its watchdog reboots the board 30 seconds after you interrupt it, and with `main.py` gone nothing restarts.
+
+```sh
+mpremote connect /dev/ttyACM0 fs rm main.py
+mpremote connect /dev/ttyACM0 fs rm johnify.html
+mpremote connect /dev/ttyACM0 fs rm encryption.py
+mpremote connect /dev/ttyACM0 fs ls
+```
+
+If you installed the precompiled version, also run `fs rm encryption.mpy`. If the board restarts part-way through, just run the remaining commands again. The last command should list nothing from Johnify. The board then starts at the MicroPython prompt instead of running Johnify.
+
+**Option 2: delete every file on the board.** MicroPython itself stays installed. This deletes all files, not just Johnify's, including any SD card mounted on the board. Run option 1's first command (`fs rm main.py`) first, then open the REPL with `mpremote connect /dev/ttyACM0 repl`, press Ctrl+E to enter paste mode, paste this, and press Ctrl+D to run it:
+
+```python
+import os
+
+def wipe(path):
+    for name in os.listdir(path):
+        full = path.rstrip("/") + "/" + name
+        if os.stat(full)[0] & 0x4000:
+            wipe(full)
+            os.rmdir(full)
+        else:
+            os.remove(full)
+
+wipe("/")
+```
+
+Then type `os.listdir()`. It should print `[]`. Press Ctrl+] to leave the REPL.
+
+**Option 3: erase the whole board.** This removes the files, the saved chats and settings, and MicroPython itself. Put the board in bootloader mode (see Install, step 2), find its port, and run:
+
+```sh
+esptool.py --chip esp32s3 --port /dev/ttyACM0 erase_flash
+```
+
+The board is then blank. To use it again, flash MicroPython (Install, step 3) or another firmware.
 
 ### What is the same
 
 - Wi-Fi hotspot `Johnify-XXXX` (the name uses the same bytes of the MAC as the Arduino build), captive-portal DNS, channel 1, up to 8 phones.
-- The web app, including Settings, repeater mode, diagnostics, and the bug report button.
+- The web app, including Settings, repeater mode, diagnostics, the bug report button, leaving a chat, and resetting the board.
 - The HTTP API and its error codes (`bad room`, `bad dev`, `empty`, `crypto`, `radio busy`).
 - The packet layout, the key derivation (5,000 rounds of SHA-256), and AES-256-GCM with the same additional authenticated data, so packets from either version decrypt on the other.
 - Duplicate suppression, the 4-hop repeater limit with random relay delay, sending each message twice, 24 chats per board, 12 per phone, 200 messages in memory, 190 bytes of text.
@@ -150,8 +235,9 @@ While developing over USB, set `USE_WATCHDOG = False`. The watchdog cannot be st
 
 | Area | Difference |
 |------|------------|
-| **Web page storage** | Held in `main.py` as comment lines and streamed from flash on request, not kept in RAM. The file must stay named as `PAGE_FILE` and must not be precompiled or stripped. |
-| **AES-GCM** | MicroPython has no GCM mode, only the raw AES block function. The port builds GCM itself in Python on top of that. The output is standard AES-256-GCM, byte for byte the same as the Arduino build, but it runs in software, so encrypting or decrypting one message takes tens of milliseconds instead of well under one. |
+| **Files** | Three files on the board instead of one compiled image. `main.py`, `johnify.html` and `encryption.py` must all be present. |
+| **Web page storage** | `johnify.html` is a normal file on the board's flash. It is read in 1 KB pieces and sent, not kept in RAM. It is the same page the Arduino build serves. |
+| **AES-GCM** | MicroPython has no GCM mode, only the raw AES block function. `encryption.py` builds GCM itself in Python on top of that. The output is standard AES-256-GCM, byte for byte the same as the Arduino build, but it runs in software, so encrypting or decrypting one message takes tens of milliseconds instead of well under one. |
 | **Adding a chat** | Deriving the key (5,000 SHA-256 rounds in Python) briefly blocks the board, on the order of a second. |
 | **Saved chats at boot** | They load one by one in the background after the hotspot is up. A message for a chat that has not finished loading is not decrypted. On a board with many saved chats this window lasts a few seconds. |
 | **Receive queue** | The Arduino build has its own 16-packet queue. Here the ESP-NOW driver's receive buffer (set to 4 KB) does that job, and the "packets dropped" counter comes from the driver's statistics. |
@@ -162,7 +248,7 @@ While developing over USB, set `USE_WATCHDOG = False`. The watchdog cannot be st
 | **Radio tuning** | Transmit power and Wi-Fi power-save are set when the firmware build allows it and skipped silently when it does not. |
 | **LED** | Off unless `LED_PIN` is set. |
 | **Clock** | Uptime and message ages use the board's seconds counter. |
-| **Version string** | Settings shows `1.2.0-mp`, and the SDK line shows the MicroPython version instead of the ESP-IDF version. |
+| **Version string** | Settings shows `1.3.0-mp`, and the SDK line shows the MicroPython version instead of the ESP-IDF version. |
 
 Nothing in the Arduino feature set is missing from the port.
 
@@ -175,7 +261,11 @@ Nothing in the Arduino feature set is missing from the port.
 3. Press **Create chat**. You get a 10-character code.
 4. Give the code to the other person. They connect to their own board, press **Join**, and enter it.
 5. Messages sent by either person appear on the other's phone.
-6. The **Settings** page (the sliders icon in the top-right corner) has your display name, the repeater switch that makes that board relay traffic, and live counters.
+6. The **Settings** page (the sliders icon in the top-right corner) has your display name, the repeater switch that makes that board relay traffic, live counters, and the reset button.
+
+**Leaving a chat.** Open the chat and press **Leave**, then confirm in the dialog. The chat and its saved messages are deleted from your phone, and the board forgets the chat too: it stops keeping messages for it and removes it from its saved list. You can join again later with the code. If another phone on the same board is still in that chat, that phone re-adds it automatically within a couple of seconds.
+
+**Resetting the board.** In Settings, press **Reset board** and confirm. The board erases every chat, message, counter, log line and setting it holds, turns repeater mode off, clears its saved data in flash, and restarts, so it behaves like freshly uploaded firmware. Your phone's saved chats, name and device ID are cleared too, because otherwise the phone would put the chats straight back. Other phones keep their own copies and re-add their chats when they next connect. The Wi-Fi network disappears for a few seconds while the board restarts. The firmware itself is not touched.
 
 If the page does not load, turn off mobile data on the phone. Some phones route browser traffic over cellular when the Wi-Fi network has no internet.
 
@@ -368,13 +458,13 @@ If the `boot` sent by the client does not match the board's, `since` is treated 
 The board's last 16 events (start-up, radio failures, full queues, restarts), oldest first. Also printed to the serial port with a `[johnify]` prefix.
 
 ```json
-{ "log": ["0s Johnify 1.2.0 starting", "2s Ready: Johnify-9F3A, repeater off, 1 chats saved"] }
+{ "log": ["0s Johnify 1.3.0 starting", "2s Ready: Johnify-9F3A, repeater off, 1 chats saved"] }
 ```
 
 ### `GET /api/status`
 
 ```json
-{ "ver": "1.2.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
+{ "ver": "1.3.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
   "ssid": "Johnify-9F3A", "ch": 1, "hops": 4, "clients": 2, "rooms": 3,
   "rx": 118, "tx": 64, "relayed": 0,
   "rxDrop": 0, "txFail": 0, "bad": 3, "auth": 0, "reinit": 0,
@@ -385,9 +475,37 @@ The board's last 16 events (start-up, radio failures, full queues, restarts), ol
 
 Switches repeater mode. The setting is saved to flash and survives reboots.
 
+### `POST /api/leave` (form: `room`)
+
+Makes the board forget a chat: the chat is removed from the board's table and its saved list, and the board's stored messages for it are discarded. Harmless if the board does not know the chat. Errors: `bad room`.
+
+```json
+{ "ok": true }
+```
+
+### `POST /api/reset` (form: `confirm=RESET`)
+
+Erases all chats, messages, duplicate memory, counters, log lines and flash-saved settings, turns repeater mode off, replies, and restarts the board about 0.8 seconds later. Only `POST` is accepted, and the confirmation word must be present, so a stray link or a browser pre-fetch cannot trigger it. Errors: `post only` (405), `confirm` (400).
+
+```json
+{ "ok": true }
+```
+
 ### Other paths
 
 `/` serves the app (`Cache-Control: no-cache`, so a firmware update shows up immediately). `/favicon.ico` returns 204. Every other path replies `302` to `http://192.168.4.1/`, which together with a DNS server that answers every query with the board's address makes the captive-portal behaviour work.
+
+## Web client
+
+The app is a single HTML page stored inside the firmware: the `INDEX_HTML` constant in `Johnify.ino`, or the file `MicroPython/johnify.html`. Both versions serve the identical page. There are no external requests, because the phone has no internet while connected to the board.
+
+### Design
+
+- **Type.** Native fonts only, so nothing extra is downloaded: a built-in serif (Iowan Old Style, Palatino, or Georgia, whichever the phone has) for headlines and numerals, and the phone's own system font for everything else.
+- **Colour.** Solid colours only: forest green as the dominant colour, ink black, a paper background, and a vermilion accent used sparingly for unread counts, the send button, and warnings. A dark theme follows the phone's setting.
+- **Layout.** A ruled, editorial list with large serif numerals for chats, a green header band inside a chat, and an asymmetric bento grid on the Settings page.
+- **Motion.** One staggered reveal when the page first loads, switched off for users who ask for reduced motion. No other animation.
+- **Navigation.** The phone's back button moves between the chat list, a chat, and Settings.
 
 ### Error handling in the page
 
@@ -396,6 +514,7 @@ Switches repeater mode. The setting is saved to flash and survives reboots.
 - Every request has a 5-second limit. Replies that are not valid JSON (such as a captive-portal page from the phone) are treated as "not the board".
 - Board errors are translated into plain sentences. Unexpected script errors show a single notice.
 - The page stops polling while the tab is hidden and slows down after repeated failures.
+- Confirmations (Leave, Reset) use dialogs built into the page, not the browser's own pop-ups. Phones' "sign in to network" browsers block those pop-ups silently, which would make the buttons do nothing.
 - A message cannot be double-sent while the previous one is in flight, and an over-length message is blocked before it is sent.
 
 ### Saved state (`localStorage`, key `jf`)
@@ -439,7 +558,7 @@ Settings are `#define`s at the top of `Johnify.ino`, or variables of the same na
 | `LED_PIN` | `None` | MicroPython only. Pin number of a status LED, or `None`. XIAO ESP32S3: 21. Many ESP32 dev boards: 2. |
 | `LED_ACTIVE_LOW` | `True` | MicroPython only. `True` if the LED lights when the pin is low (XIAO), `False` for most dev boards. |
 | `USE_WATCHDOG` | `True` | MicroPython only. Reboot if the program freezes for 30 seconds. |
-| `PAGE_FILE` | `"main.py"` | MicroPython only. File the web page is read from. |
+| `PAGE_FILE` | `"johnify.html"` | MicroPython only. The web page file, read from flash on request. Keep it on the board next to `main.py`. |
 
 If you change `MAX_TEXT`, keep `PKT_HDR + 12 + MAX_TEXT + 16 <= 250`. A `static_assert` enforces this at compile time.
 
@@ -500,6 +619,8 @@ Other limits:
 
 **Known limit (Arduino).** The Arduino web server library reads a whole request body into memory before the handler runs and has no size cap, so a deliberately oversized request from a device on the hotspot could use up memory. Use `AP_PASSWORD` if you do not want unknown devices on the hotspot.
 
+## Security model
+
 ### What is protected
 
 - **Confidentiality of name and text** against anyone who does not have the chat code.
@@ -517,6 +638,11 @@ Other limits:
 - **Phone to board link.** The phone talks to the board over plain HTTP on the board's Wi-Fi. The board sees the message in plain text before encrypting it, which is expected, but anyone connected to an open Johnify hotspot could observe that HTTP traffic. Set `AP_PASSWORD` if that matters.
 - **Physical access.** Chat codes are stored in the board's flash in plain text.
 - **Denial of service.** Anyone can jam 2.4 GHz or flood ESP-NOW with junk packets.
+- **Anyone on the hotspot can reset the board.** `POST /api/reset` has no login. The `POST` and confirmation word only protect against accidents. On an open hotspot, any device that joins could wipe the board. Set `AP_PASSWORD` if that matters.
+
+This project has not had an independent security review.
+
+Firmware version: 1.3.0.
 
 ## Troubleshooting
 
@@ -531,11 +657,49 @@ Other limits:
 | Chats lost after switching browsers | History is stored per browser per device. The "sign in to network" popup uses a separate browser storage from Chrome or Safari. |
 | No serial output (Arduino) | Enable **USB CDC On Boot** in the Arduino IDE Tools menu. |
 | `MemoryError` or repeated "Memory low" in the log on MicroPython | Lower `MAX_ROOMS` and `MAX_MSGS`. See the table under Requirements. On a board with PSRAM, use a firmware build that has PSRAM support. |
-| MicroPython page shows "Johnify web page not found" | `main.py` on the board is not the complete file, was renamed (set `PAGE_FILE`), or was precompiled. Copy the full `main.py` again. |
+| MicroPython page shows "Johnify web page not found" | `johnify.html` is not on the board, or is not in the top-level folder, or was renamed (then set `PAGE_FILE`). Copy it again and check with `mpremote fs ls`. |
+| MicroPython prints "encryption.py is missing" and stops | Copy `encryption.py` (or `encryption.mpy`) to the board's top-level folder. |
+| `mpremote` or `esptool` cannot find or open the port | The port name differs from the example, and it changes between bootloader mode and normal mode. Look it up again (see the port box under Install). Try another USB cable, since some only charge. On Linux, add your user to the `dialout` group. |
 | `ImportError: no module named 'espnow'` | The MicroPython build is too old or is not an ESP32 build. Use 1.21 or newer. |
 | MicroPython board reboots every 30 seconds while you work | The watchdog is on. Set `USE_WATCHDOG = False` while developing. |
 | MicroPython prints `Radio error` or `Radio send failed` | Check the log in the bug report. Repeated failures restart the radio automatically. |
 
 The status LED, where there is one, blinks on each packet sent or received. On Arduino it is the board's built-in LED. On MicroPython set `LED_PIN`.
 
+## Repository layout
+
+```
+.
+├── arduino/
+│   └── Johnify/
+│       └── Johnify.ino   C++ firmware and the embedded web app
+├── MicroPython/
+│   ├── main.py           MicroPython firmware
+│   ├── johnify.html      the web app, read from flash when a phone asks for it
+│   └── encryption.py     key derivation and AES-256-GCM
+├── docs/
+│   └── index.html        standalone demo with a simulated board (works on GitHub Pages)
+└── README.md             this file
+```
+
 Arduino requires the sketch folder name to match the main `.ino` file name, so keep the inner folder named `Johnify`.
+
+## Verification
+
+Everything below was run on a computer, using stand-ins for the board hardware. None of it replaces testing on real boards.
+
+- **Arduino and MicroPython against each other.** The actual `Johnify.ino` source was compiled on a PC against real mbedTLS and driven alongside the MicroPython `main.py` and `encryption.py` (with a reference AES). Both derive the same key and group ID; both build byte-identical packets for nine name and text cases (plain text, accents, emoji, Chinese, control characters, over-length text); each decrypts the other's packets; each rejects tampered packets and packets whose authenticated header was changed; each ignores exact duplicates; each repeater relays the other's packets with the hop count raised by one and everything else unchanged; and the MicroPython repeater stops at the hop limit.
+- **MicroPython port (68 checks).** AES-GCM in `encryption.py` against a reference implementation for nine message sizes, plus tampering; packet building and parsing; the HTTP server over real sockets, including `johnify.html` byte for byte, correct `Content-Length`, page files of 0, 1, 1023, 1024, 1025 and 5000 bytes, a missing page file, a missing `encryption.py`, oversized and garbage requests, and 20 parallel requests; leave and reset (including refusing a GET and a faked method); chat and message limits and trimming; saved chats loading in the background; the DNS reply.
+- **Web page (33 checks).** The page was loaded in a simulated browser (jsdom) against a simulated board, with the browser's own pop-ups blocked, and driven through every screen: empty state, creating and joining chats, sending, receiving, the character counter, the browser back button, an invalid code, Settings, the repeater switch, the bug report, leaving a chat (confirm, cancel, Escape), and resetting the board (cancel, confirm, reconnecting with a fresh device ID).
+- **Arduino leave and reset (13 checks).** The real sketch code, built into the PC test program, was driven through leaving a chat, the three refusal cases for reset, and a full reset, then used normally again.
+- **Arduino syntax.** The whole sketch compiles against stand-in Arduino headers with no errors or warnings, and was built into the PC test program above.
+
+What has not been tested: the radio, Wi-Fi, flash storage, memory behaviour and range on real boards, and the real Arduino core's web server and FreeRTOS behaviour.
+
+## Testing status
+
+Add your own notes here for each version (Arduino and MicroPython): board revision, core or firmware version, number of boards, measured range, and anything you changed.
+
+## License
+
+Choose a license and add a `LICENSE` file for the Johnify code.
