@@ -32,8 +32,6 @@ Both serve the same web app, speak the same packet format, and use the same encr
 - [Memory and limits](#memory-and-limits)
 - [Security model](#security-model)
 - [Troubleshooting](#troubleshooting)
-- [Repository layout](#repository-layout)
-- [Verification](#verification)
 
 ---
 
@@ -619,8 +617,6 @@ Other limits:
 
 **Known limit (Arduino).** The Arduino web server library reads a whole request body into memory before the handler runs and has no size cap, so a deliberately oversized request from a device on the hotspot could use up memory. Use `AP_PASSWORD` if you do not want unknown devices on the hotspot.
 
-## Security model
-
 ### What is protected
 
 - **Confidentiality of name and text** against anyone who does not have the chat code.
@@ -665,41 +661,3 @@ Firmware version: 1.3.0.
 | MicroPython prints `Radio error` or `Radio send failed` | Check the log in the bug report. Repeated failures restart the radio automatically. |
 
 The status LED, where there is one, blinks on each packet sent or received. On Arduino it is the board's built-in LED. On MicroPython set `LED_PIN`.
-
-## Repository layout
-
-```
-.
-├── arduino/
-│   └── Johnify/
-│       └── Johnify.ino   C++ firmware and the embedded web app
-├── MicroPython/
-│   ├── main.py           MicroPython firmware
-│   ├── johnify.html      the web app, read from flash when a phone asks for it
-│   └── encryption.py     key derivation and AES-256-GCM
-├── docs/
-│   └── index.html        standalone demo with a simulated board (works on GitHub Pages)
-└── README.md             this file
-```
-
-Arduino requires the sketch folder name to match the main `.ino` file name, so keep the inner folder named `Johnify`.
-
-## Verification
-
-Everything below was run on a computer, using stand-ins for the board hardware. None of it replaces testing on real boards.
-
-- **Arduino and MicroPython against each other.** The actual `Johnify.ino` source was compiled on a PC against real mbedTLS and driven alongside the MicroPython `main.py` and `encryption.py` (with a reference AES). Both derive the same key and group ID; both build byte-identical packets for nine name and text cases (plain text, accents, emoji, Chinese, control characters, over-length text); each decrypts the other's packets; each rejects tampered packets and packets whose authenticated header was changed; each ignores exact duplicates; each repeater relays the other's packets with the hop count raised by one and everything else unchanged; and the MicroPython repeater stops at the hop limit.
-- **MicroPython port (68 checks).** AES-GCM in `encryption.py` against a reference implementation for nine message sizes, plus tampering; packet building and parsing; the HTTP server over real sockets, including `johnify.html` byte for byte, correct `Content-Length`, page files of 0, 1, 1023, 1024, 1025 and 5000 bytes, a missing page file, a missing `encryption.py`, oversized and garbage requests, and 20 parallel requests; leave and reset (including refusing a GET and a faked method); chat and message limits and trimming; saved chats loading in the background; the DNS reply.
-- **Web page (33 checks).** The page was loaded in a simulated browser (jsdom) against a simulated board, with the browser's own pop-ups blocked, and driven through every screen: empty state, creating and joining chats, sending, receiving, the character counter, the browser back button, an invalid code, Settings, the repeater switch, the bug report, leaving a chat (confirm, cancel, Escape), and resetting the board (cancel, confirm, reconnecting with a fresh device ID).
-- **Arduino leave and reset (13 checks).** The real sketch code, built into the PC test program, was driven through leaving a chat, the three refusal cases for reset, and a full reset, then used normally again.
-- **Arduino syntax.** The whole sketch compiles against stand-in Arduino headers with no errors or warnings, and was built into the PC test program above.
-
-What has not been tested: the radio, Wi-Fi, flash storage, memory behaviour and range on real boards, and the real Arduino core's web server and FreeRTOS behaviour.
-
-## Testing status
-
-Add your own notes here for each version (Arduino and MicroPython): board revision, core or firmware version, number of boards, measured range, and anything you changed.
-
-## License
-
-Choose a license and add a `LICENSE` file for the Johnify code.
