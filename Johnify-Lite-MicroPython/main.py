@@ -31,17 +31,17 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Settings. Change these before uploading if you need to.
 # ---------------------------------------------------------------------------
-AP_SSID_PREFIX = "Johnify-Lite"  # Wi-Fi name is this plus 4 characters from the board's MAC
+AP_SSID_PREFIX = "Johnify-Lite-"  # Wi-Fi name is this plus 4 characters from the board's MAC
 AP_PASSWORD = ""             # Empty means an open network. Use 8 or more characters to set a password.
 WIFI_CHANNEL = 1             # Must be the same on every board, or they will not hear each other.
 MAX_HOPS = 4                 # How many repeaters a message may pass through.
-MAX_ROOMS = 24               # Chats a single board remembers.
-MAX_MSGS = 200               # Recent messages a board keeps in memory.
-MAX_TEXT = 190               # Longest message in bytes. ESP-NOW packets are limited to 250 bytes.
+MAX_ROOMS = 10               # Chats a single board remembers.
+MAX_MSGS = 120               # Recent messages a board keeps in memory.
+MAX_TEXT = 135               # Longest message in bytes. ESP-NOW packets are limited to 250 bytes.
 ROOM_LEN = 10                # Length of a chat code.
 SEEN_SIZE = 256              # How many recent message IDs are remembered to spot duplicates.
 TXQ_SIZE = 16                # Packets waiting to be sent.
-MAX_WEB_CLIENTS = 6          # Web connections handled at once.
+MAX_WEB_CLIENTS = 3          # Web connections handled at once.
 LED_PIN = None               # Status LED pin, or None for no LED. XIAO ESP32S3: 21. Many ESP32 dev boards: 2.
 LED_ACTIVE_LOW = True        # True if the LED lights when the pin is low (XIAO ESP32S3). False for most dev boards.
 USE_WATCHDOG = True          # Reboot automatically if the program freezes. Turn off while developing over USB.
