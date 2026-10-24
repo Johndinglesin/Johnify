@@ -354,7 +354,7 @@ async function report(box){
       .concat(l.log.length?l.log:['(none)']).join('\n');
     box.hidden=false;box.focus();box.select();
     let ok=false;try{ok=document.execCommand('copy')}catch(e){}
-    toast(ok?'Bug report copied. Paste it where you need it.':'Could not copy automatically. Select the text and copy it.')
+    toast(ok?'Bug report copied. Paste it where you need it.':'Could not copy automatically. Select the text and copy it!')
   }catch(e){toast(why(e))}}
 
 function drawSettings(v){
