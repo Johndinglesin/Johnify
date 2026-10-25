@@ -4,6 +4,7 @@ import gc
 import time
 import json
 import struct
+import binascii
 import socket
 import network
 import machine
@@ -27,6 +28,10 @@ try:
     import esp32
 except ImportError:
     esp32 = None
+try:
+    import esp
+except ImportError:
+    esp = None
 
 # ---------------------------------------------------------------------------
 # Settings. Change these before uploading if you need to.
@@ -42,12 +47,16 @@ ROOM_LEN = 10                # Length of a chat code.
 SEEN_SIZE = 256              # How many recent message IDs are remembered to spot duplicates.
 TXQ_SIZE = 16                # Packets waiting to be sent.
 MAX_WEB_CLIENTS = 6          # Web connections handled at once.
+CONSOLE_LINES = 60           # Developer console lines kept in memory while Developer mode is on.
 LED_PIN = None               # Status LED pin, or None for no LED. XIAO ESP32S3: 21. Many ESP32 dev boards: 2.
 LED_ACTIVE_LOW = True        # True if the LED lights when the pin is low (XIAO ESP32S3). False for most dev boards.
 USE_WATCHDOG = True          # Reboot automatically if the program freezes. Turn off while developing over USB.
 PAGE_FILE = "johnify.html"   # The web page file. Keep it on the board next to main.py.
 
-VERSION = "1.3.0-mp"
+VERSION = "1.4.0-mp"
+DEV_LEASE_MS = 8000
+SHOW = ("dev", "since", "boot", "on", "polls", "clear", "confirm")
+NOISY = ("/api/poll", "/api/status", "/api/log", "/api/perf")
 LOG_LINES = 16
 HDR = 32
 HDR_FMT = "<2sB8sII12sB"
@@ -96,18 +105,165 @@ seen_ring = [None] * SEEN_SIZE
 seen_set = set()
 txq = []
 LOG = [""] * LOG_LINES
+LOG_MS = [0] * LOG_LINES
+CON = []
+PK = []
+clients = {}
+sta_cur = {}
+dev_on = False
+dev_polls = False
+dev_until = 0
+dev_task_on = False
+con_seq = 1
+busy_us = 0
+cpu_pct = 0
+boot_ms = time.ticks_ms()
 
 
 def uptime():
     return time.time() - t0
 
 
+def now_ms():
+    return time.ticks_diff(time.ticks_ms(), boot_ms)
+
+
+def tag(gid):
+    return binascii.hexlify(gid[:3]).decode()
+
+
+def hx(b):
+    return binascii.hexlify(b).decode()
+
+
+def con(cat, text, hexdata=None, ms=None):
+    global con_seq
+    if not dev_on:
+        return
+    CON.append([con_seq, now_ms() if ms is None else ms, cat, text[:150], hexdata])
+    if hexdata is not None:
+        PK.append(con_seq)
+        if len(PK) > 12:
+            old = PK.pop(0)
+            i = old - CON[0][0]
+            if 0 <= i < len(CON) and CON[i][0] == old:
+                CON[i][4] = None
+    con_seq += 1
+    if len(CON) > CONSOLE_LINES:
+        del CON[0]
+
+
 def log(msg):
     global log_head, log_count
+    ms = now_ms()
     LOG[log_head] = ("%ds %s" % (uptime(), msg))[:72]
+    LOG_MS[log_head] = ms
     log_head = (log_head + 1) % LOG_LINES
     log_count += 1
     print("[johnify]", msg)
+    con("SYS", msg, None, ms)
+
+
+def add_busy(us):
+    global busy_us
+    busy_us += us
+
+
+def renew():
+    global dev_until
+    dev_until = time.ticks_add(time.ticks_ms(), DEV_LEASE_MS)
+
+
+def dev_stop():
+    global dev_on, dev_polls, busy_us, cpu_pct
+    dev_on = False
+    dev_polls = False
+    del CON[:]
+    del PK[:]
+    clients.clear()
+    sta_cur.clear()
+    busy_us = 0
+    cpu_pct = 0
+    gc.collect()
+
+
+def dev_start():
+    global dev_on, busy_us, cpu_pct, dev_task_on
+    if not dev_on:
+        del CON[:]
+        del PK[:]
+        clients.clear()
+        sta_cur.clear()
+        busy_us = 0
+        cpu_pct = 0
+        dev_on = True
+        n = log_count if log_count < LOG_LINES else LOG_LINES
+        for i in range(n):
+            idx = (log_head - n + i) % LOG_LINES
+            text = LOG[idx]
+            con("SYS", text.split(" ", 1)[1] if " " in text else text, None, LOG_MS[idx])
+    renew()
+    if not dev_task_on:
+        dev_task_on = True
+        asyncio.create_task(dev_task())
+
+
+def fmt_mac(mac):
+    return "%02x:%02x:%02x:xx:xx:xx" % (mac[0], mac[1], mac[2])
+
+
+def track_stations():
+    global sta_cur
+    try:
+        listing = ap.status("stations")
+    except Exception:
+        return
+    cur = {}
+    for item in listing:
+        try:
+            cur[bytes(item[0])] = item[1] if len(item) > 1 else None
+        except Exception:
+            pass
+    for mac in cur:
+        if mac not in sta_cur:
+            con("WIFI", "device connected %s%s" % (fmt_mac(mac), " signal %d dBm" % cur[mac] if cur[mac] is not None else ""))
+    for mac in sta_cur:
+        if mac not in cur:
+            con("WIFI", "device disconnected %s" % fmt_mac(mac))
+    sta_cur = cur
+
+
+async def dev_task():
+    global dev_task_on, busy_us, cpu_pct
+    last = time.ticks_us()
+    try:
+        while dev_on:
+            await asyncio.sleep(1)
+            if not dev_on:
+                break
+            if time.ticks_diff(time.ticks_ms(), dev_until) >= 0:
+                dev_stop()
+                break
+            now = time.ticks_us()
+            win = time.ticks_diff(now, last)
+            last = now
+            cpu_pct = min(100, busy_us * 100 // win) if win > 0 else 0
+            busy_us = 0
+            track_stations()
+    finally:
+        dev_task_on = False
+
+
+def reset_name():
+    try:
+        rc = machine.reset_cause()
+    except Exception:
+        return "Other"
+    for name, label in (("PWRON_RESET", "Power on"), ("HARD_RESET", "Reset button"), ("WDT_RESET", "Watchdog"),
+                        ("SOFT_RESET", "Software restart"), ("DEEPSLEEP_RESET", "Deep sleep wake")):
+        if getattr(machine, name, None) == rc:
+            return label
+    return "Other"
 
 
 def blink():
@@ -165,10 +321,13 @@ def cstr(b):
 
 class Room:
     def __init__(self, code):
+        t = time.ticks_ms() if dev_on else 0
         self.code = code
         self.last = time.time()
         self.key, self.gid = enc.derive(code)
         self.cipher = enc.Cipher(self.key)
+        if dev_on:
+            con("CRYPTO", "derive key for chat %s took %d ms (5000 rounds)" % (tag(self.gid), time.ticks_diff(time.ticks_ms(), t)))
 
 
 def nvs_open():
@@ -223,7 +382,7 @@ def ensure_room(code, evict):
         for c in rooms:
             if old is None or rooms[c].last < rooms[old].last:
                 old = c
-        log("Chat list full, replacing %s..." % old[:5])
+        log("Chat list full, replacing chat %s" % tag(rooms[old].gid))
         del rooms[old]
     r = Room(code)
     rooms[code] = r
@@ -257,9 +416,18 @@ def enqueue(pkt, delay):
 
 
 def process_tx():
-    global stat_tx, stat_txfail, tx_streak
     if not txq:
         return
+    if not dev_on:
+        _process_tx()
+        return
+    t = time.ticks_us()
+    _process_tx()
+    add_busy(time.ticks_diff(time.ticks_us(), t))
+
+
+def _process_tx():
+    global stat_tx, stat_txfail, tx_streak
     now = time.ticks_ms()
     for item in txq[:]:
         if time.ticks_diff(now, item[0]) < 0:
@@ -270,6 +438,9 @@ def process_tx():
             stat_tx += 1
             tx_streak = 0
             blink()
+            if dev_on:
+                _m, h, gid, mid, dv, _n, ln = struct.unpack_from(HDR_FMT, item[1], 0)
+                con("TX", "TX chat %s msg %08x dev %08x hops %d len %d" % (tag(gid), mid, dv, h, ln), hx(item[1]))
         except OSError as ex:
             item[2] += 1
             if item[2] >= 5:
@@ -279,41 +450,76 @@ def process_tx():
                 log("Radio send failed (error %s)" % (ex.args[0] if ex.args else "?"))
             else:
                 item[0] = time.ticks_add(now, 10)
+                if dev_on:
+                    con("TX", "TX busy (error %s), retry %d of 5" % (ex.args[0] if ex.args else "?", item[2]))
 
 
 def handle_packet(msg):
+    if not dev_on:
+        _handle_packet(msg)
+        return
+    t = time.ticks_us()
+    _handle_packet(msg)
+    add_busy(time.ticks_diff(time.ticks_us(), t))
+
+
+def _handle_packet(msg):
     global stat_rx, stat_bad, stat_auth, stat_relay
     n = len(msg)
     if n < HDR or n > 250:
         stat_bad += 1
+        if dev_on:
+            con("RX", "RX rejected: wrong size (%d bytes)" % n, hx(msg))
         return
     magic, hops, gid, msgid, devid, nonce, tl = struct.unpack_from(HDR_FMT, msg, 0)
-    if magic != b"JF" or tl > MAX_TEXT or n != HDR + 12 + tl + 16:
+    if magic != b"JF":
         stat_bad += 1
+        if dev_on:
+            con("RX", "RX rejected: not a Johnify packet (%d bytes)" % n, hx(msg))
+        return
+    if tl > MAX_TEXT or n != HDR + 12 + tl + 16:
+        stat_bad += 1
+        if dev_on:
+            con("RX", "RX rejected: wrong length (%d bytes, text field %d)" % (n, tl), hx(msg))
         return
     key = (devid << 32) | msgid
+    t = tag(gid) if dev_on else ""
     if key in seen_set:
+        if dev_on:
+            con("RX", "RX duplicate ignored  chat %s msg %08x dev %08x hops %d" % (t, msgid, devid, hops), hx(msg))
         return
     seen_add(key)
     stat_rx += 1
     blink()
     plen = 12 + tl
+    result = "chat not known on this board"
     for r in rooms.values():
         if r.gid != gid:
             continue
+        t0 = time.ticks_us() if dev_on else 0
         pt = r.cipher.open(nonce, msg[HDR:HDR + plen], msg[HDR + plen:HDR + plen + 16], enc.make_aad(gid, msgid, devid))
+        if dev_on:
+            con("CRYPTO", "open %s chat %s msg %08x %d B in %d us" % ("OK" if pt is not None else "FAILED", t, msgid, plen, time.ticks_diff(time.ticks_us(), t0)))
         if pt is not None:
             store_msg(r.code, cstr(pt[:12]), cstr(pt[12:12 + tl]), devid, msgid)
+            result = "decrypted and stored"
+            if dev_on:
+                con("CHAT", "message stored for chat %s (%d bytes of text)" % (t, tl))
         else:
             stat_auth += 1
+            result = "security check FAILED, dropped"
             if stat_auth % 50 == 1:
                 log("Packet failed its security check (%d)" % stat_auth)
         break
+    relayed = False
     if repeater_on and hops < MAX_HOPS:
         c = bytearray(msg)
         c[2] = hops + 1
         if enqueue(bytes(c), 10 + os.urandom(1)[0] % 50):
             stat_relay += 1
+            relayed = True
+    if dev_on:
+        con("RX", "RX chat %s msg %08x dev %08x hops %d len %d: %s%s" % (t, msgid, devid, hops, tl, result, ", relay queued" if relayed else ""), hx(msg))
 
 
 def j(obj, code=200):
@@ -337,7 +543,9 @@ def h_join(q):
     code = norm_room(q.get("room", ""))
     if code is None:
         return fail(400, "bad room")
-    ensure_room(code, True)
+    r = ensure_room(code, True)
+    if dev_on:
+        con("CHAT", "phone joined chat %s" % tag(r.gid))
     return j({"ok": True})
 
 
@@ -362,6 +570,7 @@ def h_send(q):
     pt = nb + bytes(12 - len(nb)) + tb
     msgid = int.from_bytes(os.urandom(4), "little")
     nonce = os.urandom(12)
+    t0 = time.ticks_us() if dev_on else 0
     try:
         sealed = r.cipher.seal(nonce, pt, enc.make_aad(r.gid, msgid, dev))
     except Exception as ex:
@@ -372,6 +581,9 @@ def h_send(q):
         log("Send queue full")
         return fail(503, "radio busy")
     enqueue(pkt, 30 + os.urandom(1)[0] % 40)
+    if dev_on:
+        con("CRYPTO", "seal chat %s msg %08x %d B text -> %d B packet in %d us" % (tag(r.gid), msgid, len(tb), len(pkt), time.ticks_diff(time.ticks_us(), t0)))
+        con("CHAT", "message from a phone queued for the radio, sent twice: chat %s msg %08x (%d bytes of text)" % (tag(r.gid), msgid, len(tb)))
     seen_add((dev << 32) | msgid)
     store_msg(code, cstr(nb), cstr(tb), dev, msgid)
     return j({"ok": True, "i": "%08x" % msgid})
@@ -454,8 +666,12 @@ def h_leave(q):
     code = norm_room(q.get("room", ""))
     if code is None:
         return fail(400, "bad room")
-    if code in rooms or code in pending:
-        log("Left chat %s..." % code[:5])
+    if code in rooms:
+        tg = tag(rooms[code].gid)
+        log("Left chat %s" % tg)
+        con("CHAT", "phone left chat %s, board forgot it" % tg)
+    elif code in pending:
+        log("Left a saved chat that had not finished loading")
     rooms.pop(code, None)
     if code in pending:
         pending.remove(code)
@@ -471,6 +687,7 @@ def h_reset(q):
         return fail(405, "post only")
     if q.get("confirm") != "RESET":
         return fail(400, "confirm")
+    dev_stop()
     rooms.clear()
     del pending[:]
     del msgs[:]
@@ -508,9 +725,101 @@ def h_reset(q):
     return j({"ok": True})
 
 
+def h_dev(q):
+    global dev_polls
+    if q.get("__method") != "POST":
+        return fail(405, "post only")
+    if "on" in q:
+        if q["on"] == "1":
+            dev_start()
+        else:
+            dev_stop()
+    if dev_on:
+        renew()
+        if "polls" in q:
+            dev_polls = q["polls"] == "1"
+        if q.get("clear") == "1":
+            del CON[:]
+            del PK[:]
+    return j({"on": dev_on, "polls": dev_polls})
+
+
+def h_console(q):
+    since = to_int(q.get("since", "0"))
+    if q.get("boot", "") != boot_hex:
+        since = 0
+    if not dev_on:
+        return j({"on": False, "polls": False, "boot": boot_hex, "lost": 0, "lines": [], "next": since, "more": False})
+    renew()
+    newest = con_seq - 1
+    if since < 0 or since > newest:
+        since = 0
+    first = since + 1
+    window = newest - CONSOLE_LINES + 1 if newest > CONSOLE_LINES else 1
+    lost = 0
+    if first < window:
+        lost = window - first
+        first = window
+    last = first - 1
+    out = []
+    size = 0
+    for l in CON:
+        if l[0] < first:
+            continue
+        if len(out) >= 40 or size > 6000:
+            break
+        d = {"s": l[0], "t": l[1], "c": l[2], "x": l[3]}
+        size += len(l[3]) + 60
+        if l[4]:
+            d["h"] = l[4]
+            size += len(l[4])
+        out.append(d)
+        last = l[0]
+    more = bool(CON) and CON[-1][0] > last
+    return j({"on": True, "polls": dev_polls, "boot": boot_hex, "lost": lost, "lines": out, "next": last, "more": more})
+
+
+def h_perf(q):
+    if not dev_on:
+        return j({"on": False})
+    renew()
+    free = gc.mem_free()
+    alloc = gc.mem_alloc()
+    temp = None
+    try:
+        temp = esp32.mcu_temperature()
+    except Exception:
+        temp = None
+    fs_total = fs_free = None
+    try:
+        st = os.statvfs("/")
+        fs_total = st[1] * st[2]
+        fs_free = st[1] * st[3]
+    except Exception:
+        pass
+    flash = None
+    try:
+        flash = esp.flash_size()
+    except Exception:
+        pass
+    now = time.time()
+    cl = [{"ip": ip, "age": now - clients[ip][0], "n": clients[ip][1]} for ip in clients]
+    sta = [{"mac": fmt_mac(m), "rssi": sta_cur[m]} for m in sta_cur]
+    u = os.uname()
+    try:
+        mhz = machine.freq() // 1000000
+    except Exception:
+        mhz = None
+    return j({"on": True, "temp": temp, "cpu": cpu_pct, "mhz": mhz, "cores": None, "chip": u.machine[:40],
+              "heapTotal": free + alloc, "heapFree": free, "heapMax": None, "psramTotal": None, "psramFree": None,
+              "flash": flash, "fsTotal": fs_total, "fsFree": fs_free, "up": uptime(), "reset": reset_name(),
+              "sta": sta, "clients": cl})
+
+
 ROUTES = {"/api/hello": h_hello, "/api/join": h_join, "/api/send": h_send, "/api/poll": h_poll,
           "/api/status": h_status, "/api/log": h_log, "/api/repeater": h_repeater,
-          "/api/leave": h_leave, "/api/reset": h_reset}
+          "/api/leave": h_leave, "/api/reset": h_reset,
+          "/api/dev": h_dev, "/api/console": h_console, "/api/perf": h_perf}
 
 
 def unquote(s):
@@ -594,8 +903,9 @@ async def send_page(w):
         f = open(PAGE_FILE, "rb")
     except OSError:
         log("Cannot open %s, the web page is missing" % PAGE_FILE)
-        await respond(w, 500, "Johnify web page not found. Copy johnify.html to the board.")
-        return
+        msg = "Johnify web page not found. Copy johnify.html to the board."
+        await respond(w, 500, msg)
+        return 500, len(msg)
     try:
         size = os.stat(PAGE_FILE)[6]
         w.write(("HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: %d\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
@@ -606,33 +916,86 @@ async def send_page(w):
                 break
             w.write(chunk)
             await w.drain()
+        return 200, size
     finally:
         f.close()
 
 
+def peer_of(w):
+    try:
+        p = w.get_extra_info("peername")
+        return str(p[0]) if isinstance(p, tuple) else str(p)
+    except Exception:
+        return "?"
+
+
+def note_client(ip):
+    c = clients.get(ip)
+    if c is None:
+        if len(clients) >= 8:
+            oldest = None
+            for k in clients:
+                if oldest is None or clients[k][0] < clients[oldest][0]:
+                    oldest = k
+            del clients[oldest]
+        c = clients[ip] = [0, 0]
+    c[0] = time.time()
+    c[1] += 1
+
+
+def req_args(q):
+    parts = []
+    for k in q:
+        if k == "__method":
+            continue
+        v = q[k]
+        parts.append("%s=%s" % (k, v[:12]) if k in SHOW else "%s=<%dB>" % (k, len(v.encode())))
+    return "&".join(parts)
+
+
 async def serve(r, w):
+    on = dev_on
+    t0 = time.ticks_us() if on else 0
     req = await read_request(r)
     if req is None:
         await respond(w, 400, "bad request")
         return
     method, path, q = req
+    code = 200
+    size = 0
+    work = 0
     if path == "/":
-        await send_page(w)
-        return
-    fn = ROUTES.get(path)
-    if fn is None:
-        if path == "/favicon.ico":
-            await respond(w, 204, "")
+        code, size = await send_page(w)
+    else:
+        fn = ROUTES.get(path)
+        if fn is None:
+            if path == "/favicon.ico":
+                code = 204
+                await respond(w, 204, "")
+            else:
+                code = 302
+                await respond(w, 302, "", extra="Location: http://%s/\r\n" % ap_ip)
         else:
-            await respond(w, 302, "", extra="Location: http://%s/\r\n" % ap_ip)
-        return
-    try:
-        q["__method"] = method
-        code, body, ctype = fn(q)
-    except Exception as ex:
-        log("Handler error: %s" % ex)
-        code, body, ctype = 500, "error", "text/plain"
-    await respond(w, code, body, ctype)
+            q["__method"] = method
+            w0 = time.ticks_us() if on else 0
+            try:
+                code, body, ctype = fn(q)
+            except Exception as ex:
+                log("Handler error: %s" % ex)
+                code, body, ctype = 500, "error", "text/plain"
+            if on:
+                work = time.ticks_diff(time.ticks_us(), w0)
+            size = len(body)
+            await respond(w, code, body, ctype)
+    if on and dev_on:
+        add_busy(work)
+        if path != "/api/console":
+            ip = peer_of(w)
+            note_client(ip)
+            if dev_polls or path not in NOISY:
+                us = time.ticks_diff(time.ticks_us(), t0)
+                args = req_args(q)
+                con("HTTP", "%s %s %s%s%s -> %d %dB %d.%d ms" % (ip, method, path, "?" if args else "", args, code, size, us // 1000, (us % 1000) // 100))
 
 
 async def client(r, w):
@@ -740,7 +1103,10 @@ async def loader_task():
         code = pending.pop(0)
         if code not in rooms and len(rooms) < MAX_ROOMS:
             try:
+                t = time.ticks_us() if dev_on else 0
                 rooms[code] = Room(code)
+                if dev_on:
+                    add_busy(time.ticks_diff(time.ticks_us(), t))
             except Exception as ex:
                 log("Could not load a saved chat (%s)" % ex)
         if wdt is not None:
@@ -838,7 +1204,7 @@ def setup():
         time.sleep(2)
         machine.reset()
     log("Ready: %s, repeater %s, %d chats saved" % (ssid, "on" if repeater_on else "off", len(rooms)))
-    print("[johnify] Open http://%s" % ap_ip)
+    log("Open http://%s" % ap_ip)
     try:
         os.stat(PAGE_FILE)
     except OSError:
