@@ -28,6 +28,7 @@ All three serve the same web app, speak the same packet format, and use the same
 - [Packet format](#packet-format)
 - [Cryptography](#cryptography)
 - [Duplicate suppression and repeaters](#duplicate-suppression-and-repeaters)
+- [Nearby boards](#nearby-boards)
 - [Radio notes](#radio-notes)
 - [HTTP API](#http-api)
 - [Web client](#web-client)
@@ -43,6 +44,7 @@ All three serve the same web app, speak the same packet format, and use the same
 - No infrastructure. Boards talk to each other directly; phones talk only to their local board.
 - Chat rooms identified by a 10-character code. Anyone with the code can join. Anyone without it cannot read the traffic.
 - End-to-end encryption: AES-256-GCM, with the key derived from the chat code. The key never leaves the board and the phone, and is never transmitted.
+- Nearby boards count: each board sends a tiny beacon every 30 seconds or so, and the app shows how many other boards it can hear ("3 boards in range"). Radio broadcast has no delivery confirmation, so this is how you can tell whether you are connected to anything at all. See [Nearby boards](#nearby-boards).
 - Duplicate suppression: the same message arriving twice (retransmits, repeaters) is shown once.
 - Repeater mode: a board can re-broadcast any message it hears, for any chat, up to a hop limit. Repeaters do not need to know the chat code and cannot read the messages they relay.
 - Chat history is kept in the phone's browser storage. Chat codes are kept in the board's flash. Recent messages are kept in the board's RAM.
@@ -264,7 +266,7 @@ Johnify Lite is a frozen copy of **Johnify 1.3.0** for MicroPython, kept in the 
 **Lite will not receive any more updates.** Johnify 1.4.0 added [Developer mode](#developer-mode), and the main MicroPython version keeps moving forward from there. Lite stays at 1.3.0 as the smaller build: no new features, and no bug fixes. There is no Lite version for Arduino.
 
 - **Same radio protocol.** The packet format and encryption did not change between 1.3.0 and 1.4.0, so Lite boards and 1.4.0 boards (Arduino or MicroPython) chat and relay for each other.
-- **What Lite does not have.** Developer mode, and the log fix described below. Everything else from 1.3.0 is there: leaving a chat, resetting the board, the repeater, diagnostics, and the bug report button. Settings shows `1.3.0-mp`.
+- **What Lite does not have.** Developer mode, the nearby boards count (Lite does not send beacons, so 1.4.0 boards do not count Lite boards, although Lite boards still chat and relay normally), and the log fix described below. Everything else from 1.3.0 is there: leaving a chat, resetting the board, the repeater, diagnostics, and the bug report button. Settings shows `1.3.0-mp`.
 - **Known issue in Lite, which will not be fixed there.** Two event log lines print the first five characters of a chat code: "Chat list full, replacing ..." and "Left chat ...". Those lines appear in the board's event log and in the text made by **Copy bug report**. Look at a Lite bug report before you post it publicly. Johnify 1.4.0 fixes this.
 - **Install it exactly like the MicroPython version** (see [Install](#install) in that section), using the files in `Johnify-Lite-MicroPython/` instead. The file names are the same in both folders, so copying one set onto a board overwrites the other. A board runs one or the other. Saved chats carry over, because both use the same storage format.
 - **Removing it** is the same as removing the MicroPython version (see [Removing Johnify from a board](#removing-johnify-from-a-board)).
@@ -316,8 +318,8 @@ Each line has the board's uptime in seconds, a category, and text.
 |----------|-----------------|
 | `SYS` | The same lines the board prints to its serial port, including start-up. When Developer mode starts, the recent ones are replayed so you see what you would see on a laptop. |
 | `HTTP` | Every request: the phone's IP, method, path, the request's parameters, the reply code and size, and how long it took. |
-| `RX` | Every packet heard over the radio: the chat's ID, message ID, device ID, hop count, length, and what the board did with it (decrypted and stored, chat not known here, duplicate, rejected, failed its security check, relay queued). |
-| `TX` | Every packet the board sends, and radio send problems. |
+| `RX` | Every packet heard over the radio: the chat's ID, message ID, device ID, hop count, length, and what the board did with it (decrypted and stored, chat not known here, duplicate, rejected, failed its security check, relay queued). Beacons from other boards show as `RX beacon from board ...`. |
+| `TX` | Every packet the board sends (including its own `TX beacon`), and radio send problems. |
 | `CRYPTO` | Encrypting, decrypting, and deriving keys, with how long each took and whether decryption passed its check. |
 | `CHAT` | Phones joining and leaving chats, and messages being stored or queued for sending. |
 | `WIFI` | Devices connecting to and leaving the hotspot, with signal strength. |
@@ -400,6 +402,19 @@ Total size is `60 + len` bytes, at most 250.
 
 Fields in the header are readable by anyone listening. The sender's display name and the message text are inside the ciphertext.
 
+### Beacon packet
+
+A second, much smaller packet type tells nearby boards that this board exists. It is 8 bytes, little-endian, and never carries any chat data.
+
+| Offset | Size | Field | Notes |
+|-------:|-----:|-------|-------|
+| 0 | 2 | `magic` | ASCII `JB`. Message packets use `JF`. |
+| 2 | 1 | `ver` | Beacon version, currently `1`. Boards ignore versions they do not know. |
+| 3 | 4 | `id` | Random board ID, chosen again at every start. It is not derived from the MAC address. |
+| 7 | 1 | `flags` | Bit 0 is set when the board is a repeater. |
+
+Beacons are not encrypted or authenticated, are not added to the duplicate memory, and are never relayed, so a count of boards means boards the receiver can hear directly. See [Nearby boards](#nearby-boards).
+
 ## Cryptography
 
 ### Key derivation
@@ -456,6 +471,18 @@ Loop and storm protection in a repeater network comes from three things working 
 
 Originating boards send each message twice, 30–70 ms apart, because broadcast frames are not acknowledged. The second copy is dropped by every receiver that got the first.
 
+## Nearby boards
+
+Broadcast packets are not acknowledged, so a sender cannot tell whether anyone heard a message. To answer the simpler question of whether a board is connected to anything at all, every board sends a beacon (see [Beacon packet](#beacon-packet)) every 30 seconds, plus a random 0 to 5 seconds so boards do not stay in step. The first one goes out a few seconds after start-up.
+
+- **Counting.** A board remembers the IDs of the boards whose beacons it has heard and counts those heard in the last 100 seconds, so one or two lost beacons do not make the number flicker. It remembers up to 16 boards at once. If more than 16 are in range, the oldest is forgotten first.
+- **What the app shows.** A thin line under the header: `Looking for other boards...` for the first 40 seconds after the board starts, then `No other boards in range`, `1 board in range`, or `N boards in range`. It is hidden while the phone is not connected to its board. The number comes in every poll reply as `near`, and also in `/api/status`. It is `-1` during the start-up period.
+- **What it means.** It counts boards, not people and not chats. It says another Johnify board is within radio range, not that anyone there has your chat code or that a particular message arrived.
+- **Not counted.** Boards running Johnify Lite (1.3.0), and any 1.4.0 board without beacons, do not send them, so they are not counted even though they chat and relay normally.
+- **Cost.** One 8-byte packet per board every 30 seconds. Beacons are not counted in the `Sent` and `Packets heard` numbers and do not blink the LED.
+- **Older 1.4.0 boards.** A board that does not know beacons treats them as unrecognised packets and adds them to its `bad` counter (shown under Settings, Health). That counter rises by about two per minute per nearby board and is harmless.
+- **Trust.** Beacons are unauthenticated, so anyone with a radio can make a board appear to be in range. Treat the count as a hint for troubleshooting, not as proof of who is nearby.
+
 ## Radio notes
 
 - **Channel.** All boards must use the same Wi-Fi channel (`WIFI_CHANNEL`, default 1). The access point fixes the radio to that channel, and ESP-NOW peers are added with `channel = 0` so they follow the radio. Boards on different channels cannot hear each other.
@@ -463,6 +490,7 @@ Originating boards send each message twice, 30–70 ms apart, because broadcast 
 - **Power save.** Wi-Fi sleep is disabled (`WiFi.setSleep(false)`) so the radio is always listening.
 - **TX power.** Set to the maximum (19.5 dBm).
 - **Receive path.** The ESP-NOW callback runs in the Wi-Fi task. It only copies the packet into a 16-entry ring under a spinlock. All parsing, crypto and storage happen in `loop()`. If the ring is full, new packets are dropped.
+- **Beacons.** The 8-byte beacon packets share the same radio path as messages; see [Nearby boards](#nearby-boards).
 - **Send path.** `esp_now_send` is non-blocking. If it returns an error (for example, driver queue full), the packet is retried after 10 ms, up to 5 times.
 - **Range.** Typical ESP-NOW range is on the order of 100–200 m in open air and much less indoors. These are rough numbers; antenna, orientation, enclosure and interference all matter.
 - **Core version.** The receive callback signature differs between Arduino-ESP32 2.x and 3.x. The sketch selects the right one with `ESP_ARDUINO_VERSION_MAJOR`.
@@ -509,7 +537,8 @@ Returns messages newer than sequence number `since` for the listed chats. Also r
   "msgs": [
     { "i": "5e8c01aa", "d": "a1b2c3d4", "r": "K7M2QX9TBA", "n": "Sam", "x": "hello", "a": 3 }
   ],
-  "next": 42
+  "next": 42,
+  "near": 3
 }
 ```
 
@@ -521,6 +550,7 @@ Returns messages newer than sequence number `since` for the listed chats. Also r
 | `n`, `x` | Display name and text. |
 | `a` | Age of the message in seconds, by the board's clock. |
 | `next` | The value the client should send as `since` next time. |
+| `near` | Number of other boards heard in the last 100 seconds (see [Nearby boards](#nearby-boards)). `-1` while the board is still starting up. |
 
 If the `boot` sent by the client does not match the board's, `since` is treated as 0. This handles a phone switching boards or a board rebooting. At most 30 messages (and about 4.5 KB of JSON) are returned per call; if there are more, `next` points at the last one scanned and the client simply polls again.
 
@@ -538,7 +568,7 @@ The board's last 16 events (start-up, radio failures, full queues, restarts), ol
 { "ver": "1.4.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
   "ssid": "Johnify-9F3A", "ch": 1, "hops": 4, "clients": 2, "rooms": 3,
   "rx": 118, "tx": 64, "relayed": 0,
-  "rxDrop": 0, "txFail": 0, "bad": 3, "auth": 0, "reinit": 0,
+  "rxDrop": 0, "txFail": 0, "bad": 3, "auth": 0, "reinit": 0, "near": 2,
   "heap": 214000, "minHeap": 186000, "up": 5321 }
 ```
 
@@ -639,6 +669,7 @@ The app is a single HTML page stored inside the firmware: the `INDEX_HTML` const
 - Incoming messages are de-duplicated against saved history by `devId + msgId`, so repeated or re-fetched messages never show twice.
 - When a chat is created or joined, the client fetches that chat's history with `since=0`, so a phone joining late sees what the board still holds.
 - Message times shown in the UI are computed as `now - age` when the message is first received. The board has no real-time clock, so times are approximate for old messages.
+- The poll reply's `near` field drives the "boards in range" line under the header. It is hidden while the connection warning is showing.
 - Requests time out after 5 s. A small dot next to the title is green when the last poll succeeded and red when it failed.
 
 Because phones are plain HTTP pages, `crypto.subtle` is not available. That is why encryption happens on the board rather than in the browser.
@@ -741,6 +772,7 @@ Other limits:
 ### What is not protected
 
 - **Metadata is visible.** A listener can see that packets are Johnify packets, their size and timing, the opaque group ID (so which packets belong to the same chat), the random device ID, and hop counts.
+- **Beacons are visible and unauthenticated.** A listener can see that a board is present and whether it is a repeater. The board ID changes at every start and is not the MAC address. Anyone can also forge beacons, so the nearby boards count can be faked.
 - **Device IDs are stable.** A phone keeps its ID, so a listener can tell that packets with the same ID came from the same phone, even though they cannot read the contents.
 - **The chat code is the password.** Anyone who has it can read and write. There are no individual accounts, no revocation, and no forward secrecy; if a code leaks, past captured traffic for that chat can be decrypted.
 - **Offline guessing.** An attacker who captures one packet can test candidate codes offline, using the group ID or the GCM tag as the check. Each guess costs about 5,000 SHA-256 operations. With a 49.5-bit code and that stretching, the work to exhaust the space is roughly 2^62 hash operations. That is out of reach for casual attackers but not a margin you should rely on against a well-funded one. A longer code or a real memory-hard KDF would improve this.
@@ -761,6 +793,8 @@ Firmware version: 1.4.0 (Johnify Lite: 1.3.0).
 |---------|-----------------|
 | Johnify network does not appear | Board powered? Wait a few seconds after boot. Try the serial monitor for the printed SSID. |
 | Page does not load | Open `http://192.168.4.1` directly. Turn off mobile data. Some phones need the captive-portal prompt dismissed first. |
+| App says "No other boards in range" | No beacon was heard in the last 100 seconds. Check that the other board is powered and runs 1.4.0 with beacons (Lite does not send them), that both use the same `WIFI_CHANNEL`, and that they are within range. Messages can still reach boards that are not counted. |
+| `bad` counter rises about twice a minute | A nearby board running an older 1.4.0 build without beacon support sees the new beacon packets as unrecognised. Harmless. Update that board to remove it. |
 | Dot next to the title is red | The phone left the board's Wi-Fi, or the board rebooted. Reconnect. |
 | Messages do not reach the other board | Both boards must use the same `WIFI_CHANNEL` and the same chat code, and be within range. Open Settings on the receiving board and watch **Packets heard** while the other board sends. If it does not rise, it is a radio problem. If it rises but nothing appears, the chat codes differ. |
 | Messages disappear after a board restarts | Expected. The board's RAM history is lost. Phones keep their own copy. |
@@ -785,6 +819,7 @@ The status LED, where there is one, blinks on each packet sent or received. On A
 - **Fixed a secret leak in the event log.** Two log lines printed the first five characters of a chat code. They now show a harmless ID. The lines appeared in the bug report text too.
 - **MicroPython is now three files** (`main.py`, `johnify.html`, `encryption.py`) so each compiles separately and the page is read from flash.
 - **Added Johnify Lite**, a frozen copy of 1.3.0 for MicroPython, in `Johnify-Lite-MicroPython/`.
+- **Added a nearby boards count.** Each board sends an 8-byte beacon about every 30 seconds, and the app shows "N boards in range" under the header, so you can tell whether you are connected to anything at all. New packet type (`JB`), implemented in both the Arduino and MicroPython versions, and a new `near` field in `/api/poll` and `/api/status`. Boards on older 1.4.0 builds ignore beacons but count them under `bad`.
 - Removed the demo site.
 - **Fixed a crash in Developer mode on MicroPython.** On some MicroPython builds the Wi-Fi station list gives a text value (such as an IP address) where the signal strength was expected, which stopped Developer mode's background task with `TypeError: can't convert str to int`. Signal strength is now used only when it is a real number (otherwise it is left blank), and an error while tracking devices is logged instead of stopping Developer mode.
 
