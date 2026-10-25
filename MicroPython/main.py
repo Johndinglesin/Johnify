@@ -61,12 +61,21 @@ LOG_LINES = 16
 HDR = 32
 HDR_FMT = "<2sB8sII12sB"
 BCAST = b"\xff" * 6
+BEACON_FMT = "<2sBIB"        # 'JB', version 1, board ID, flags (bit 0 = repeater). 8 bytes.
+BEACON_LEN = 8
+BEACON_MS = 30000            # A board announces itself this often (plus up to 5 s of random delay).
+BEACON_TTL_MS = 100000       # A board not heard from for this long is no longer counted as in range.
+BEACON_GRACE_MS = 40000      # After start-up, "looking for boards" is shown for this long.
+BEACON_MAX = 16              # Other boards remembered at once.
 HEXCH = "0123456789abcdefABCDEF"
 CODE_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 REASON = {200: "OK", 204: "No Content", 302: "Found", 400: "Bad Request",
           404: "Not Found", 500: "Internal Server Error", 503: "Service Unavailable"}
 
 boot_hex = "%08x" % int.from_bytes(os.urandom(4), "little")
+beacon_id = int.from_bytes(os.urandom(4), "little")
+near = {}
+next_beacon = 0
 t0 = time.time()
 ssid = ""
 ap_ip = "192.168.4.1"
@@ -210,6 +219,47 @@ def dev_start():
 
 def fmt_mac(mac):
     return "%02x:%02x:%02x:xx:xx:xx" % (mac[0], mac[1], mac[2])
+
+
+def near_count():
+    now = time.ticks_ms()
+    for k in [k for k in near if time.ticks_diff(now, near[k]) > BEACON_TTL_MS]:
+        del near[k]
+    if not near and now_ms() < BEACON_GRACE_MS:
+        return -1
+    return len(near)
+
+
+def beacon_tick():
+    global next_beacon
+    now = time.ticks_ms()
+    if time.ticks_diff(now, next_beacon) < 0:
+        return
+    next_beacon = time.ticks_add(now, BEACON_MS + int.from_bytes(os.urandom(2), "little") % 5000)
+    enqueue(struct.pack(BEACON_FMT, b"JB", 1, beacon_id, 1 if repeater_on else 0), 0)
+
+
+def handle_beacon(msg):
+    global stat_bad
+    n = len(msg)
+    if n != BEACON_LEN:
+        stat_bad += 1
+        if dev_on:
+            con("RX", "RX rejected: wrong beacon size (%d bytes)" % n, hx(msg))
+        return
+    _m, ver, bid, flags = struct.unpack(BEACON_FMT, msg)
+    if ver != 1 or bid == beacon_id:
+        return
+    is_new = bid not in near
+    if is_new and len(near) >= BEACON_MAX:
+        oldest = None
+        for k in near:
+            if oldest is None or time.ticks_diff(near[oldest], near[k]) > 0:
+                oldest = k
+        del near[oldest]
+    near[bid] = time.ticks_ms()
+    if dev_on:
+        con("RX", "RX beacon from board %08x%s%s" % (bid, " (repeater)" if flags & 1 else "", ", newly heard" if is_new else ""), hx(msg))
 
 
 def track_stations():
@@ -441,8 +491,12 @@ def _process_tx():
         try:
             en.send(BCAST, item[1], False)
             txq.remove(item)
-            stat_tx += 1
             tx_streak = 0
+            if item[1][:2] == b"JB":
+                if dev_on:
+                    con("TX", "TX beacon", hx(item[1]))
+                continue
+            stat_tx += 1
             blink()
             if dev_on:
                 _m, h, gid, mid, dv, _n, ln = struct.unpack_from(HDR_FMT, item[1], 0)
@@ -472,6 +526,9 @@ def handle_packet(msg):
 def _handle_packet(msg):
     global stat_rx, stat_bad, stat_auth, stat_relay
     n = len(msg)
+    if msg[:2] == b"JB":
+        handle_beacon(msg)
+        return
     if n < HDR or n > 250:
         stat_bad += 1
         if dev_on:
@@ -626,7 +683,7 @@ def h_poll(q):
         out.append({"i": "%08x" % m[1], "d": "%08x" % m[2], "r": m[4], "n": m[5], "x": m[6], "a": now - m[3]})
         size += len(m[6]) + len(m[5]) + 90
         last = m[0]
-    return j({"boot": boot_hex, "msgs": out, "next": last})
+    return j({"boot": boot_hex, "msgs": out, "next": last, "near": near_count()})
 
 
 def h_status(q):
@@ -647,7 +704,7 @@ def h_status(q):
               "repeater": repeater_on, "ssid": ssid, "ch": WIFI_CHANNEL, "hops": MAX_HOPS,
               "clients": clients, "rooms": len(rooms), "rx": stat_rx, "tx": stat_tx, "relayed": stat_relay,
               "rxDrop": drop, "txFail": stat_txfail, "bad": stat_bad, "auth": stat_auth, "reinit": stat_reinit,
-              "heap": free, "minHeap": min_free, "up": uptime()})
+              "near": near_count(), "heap": free, "minHeap": min_free, "up": uptime()})
 
 
 def h_log(q):
@@ -698,6 +755,7 @@ def h_reset(q):
     del pending[:]
     del msgs[:]
     del txq[:]
+    near.clear()
     seen_set.clear()
     for i in range(SEEN_SIZE):
         seen_ring[i] = None
@@ -1091,6 +1149,7 @@ async def radio_task():
                     break
                 handle_packet(msg)
                 await asyncio.sleep_ms(0)
+            beacon_tick()
             process_tx()
         except Exception as ex:
             if time.time() - radio_err_at >= 10:
@@ -1158,7 +1217,7 @@ async def health_task():
 
 
 def setup():
-    global ap, sta, ssid, ap_ip, led, repeater_on, wdt
+    global ap, sta, ssid, ap_ip, led, repeater_on, wdt, next_beacon
     if LED_PIN is not None:
         try:
             led = machine.Pin(LED_PIN, machine.Pin.OUT)
@@ -1209,6 +1268,7 @@ def setup():
         log("Radio failed to start (%s), rebooting" % ex)
         time.sleep(2)
         machine.reset()
+    next_beacon = time.ticks_add(time.ticks_ms(), 2000 + int.from_bytes(os.urandom(2), "little") % 3000)
     log("Ready: %s, repeater %s, %d chats saved" % (ssid, "on" if repeater_on else "off", len(rooms)))
     log("Open http://%s" % ap_ip)
     try:
