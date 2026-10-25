@@ -102,6 +102,24 @@ textarea{display:block;width:100%;min-height:44px;max-height:120px;resize:none;b
 .switch input:checked+.knob:after{transform:translateX(26px)}
 .field{width:100%;margin:2px 0 12px;padding:6px 0;border:0;border-bottom:2px solid var(--ink);border-radius:0;background:none;font:700 18px var(--sans);outline:none}
 .rep{width:100%;height:170px;margin-top:12px;font:500 12px/1.4 ui-monospace,Menlo,Consolas,monospace}
+@media(max-width:380px){.tile .num{font-size:34px}}
+.bar{height:10px;margin-top:10px;border:2px solid currentColor;border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:currentColor;transition:width .3s}
+.bar.hot i{background:var(--acc)}
+.sub2{margin-top:8px;font-size:13px;opacity:.8}
+.trow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--rule);font-size:14px}
+.tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{padding:6px 10px;border:2px solid var(--ink);border-radius:6px;background:none;font:800 10px var(--sans);letter-spacing:.08em;cursor:pointer}
+.chip.off{opacity:.4}
+.leave.on{font-weight:800}
+.con{height:46dvh;min-height:260px;margin-top:10px;padding:8px 10px;overflow-y:auto;border-radius:8px;background:#12140f;color:#e8e3d3;font:500 11.5px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.cl{padding:1px 0;white-space:pre-wrap;word-break:break-word}
+.ct{margin-right:6px;opacity:.45}
+.cc{display:inline-block;min-width:6ch;margin-right:6px;font-weight:800}
+.c-SYS .cc{color:#9b9584}.c-HTTP .cc{color:#e8e3d3}.c-RX .cc{color:#6cc09a}.c-TX .cc{color:#ff8a63}.c-CRYPTO .cc{color:#e0c060}.c-CHAT .cc{color:#7fb0d8}.c-WIFI .cc{color:#c9a574}
+.chexb{margin-left:6px;padding:0 6px;border:1px solid #6b6556;border-radius:4px;background:none;color:#e8e3d3;font:inherit;font-size:10px;cursor:pointer}
+.chexv{margin:2px 0 4px 6px;padding:6px;border-left:2px solid #6b6556;color:#b8b29f;word-break:break-all}
+.con.hide-SYS .c-SYS,.con.hide-HTTP .c-HTTP,.con.hide-RX .c-RX,.con.hide-TX .c-TX,.con.hide-CRYPTO .c-CRYPTO,.con.hide-CHAT .c-CHAT,.con.hide-WIFI .c-WIFI{display:none}
 #modal,#cmodal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,9,6,.6)}
 #modal[hidden],#cmodal[hidden]{display:none}
 .box{width:100%;max-width:340px;padding:20px;border:2px solid var(--ink);border-radius:10px;background:var(--paper)}
@@ -280,6 +298,7 @@ addEventListener('popstate',e=>{
 try{history.replaceState({v:'list',c:null},'')}catch(e){}
 
 function render(){
+  stopDev();
   $('#bSet').classList.toggle('on',view==='settings');
   clearInterval(stT);
   const v=$('#view');v.innerHTML='';
@@ -357,10 +376,106 @@ async function report(box){
     toast(ok?'Bug report copied. Paste it where you need it.':'Could not copy automatically. Select the text and copy it.')
   }catch(e){toast(why(e))}}
 
+const fmtB=n=>n==null?'-':n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B';
+const CATS=['SYS','HTTP','RX','TX','CRYPTO','CHAT','WIFI'];
+const CON={boot:'',last:0,lines:[],hidden:{},paused:false,polls:false};
+const DEV={on:false,grid:null,btn:null,t1:null,t2:null};
+let conBox=null,conBusy=false;
+const kvl=(k,x)=>{const d=el('div','kv');d.append(el('span',0,k),el('b',0,String(x)));return d};
+const kvRows=(host,list)=>{[...host.querySelectorAll('.kv')].forEach(x=>x.remove());for(const[k,x,bad]of list){const d=kvl(k,x);if(bad)d.lastChild.className='warnv';host.append(d)}};
+const hexRows=h=>{const o=[];for(let i=0;i<h.length;i+=32)o.push(h.slice(i,i+32).replace(/(..)/g,'$1 ').trim());return o.join('\n')};
+const conText=l=>'['+(l.t/1000).toFixed(3)+'] '+l.c+' '+l.x+(l.h?'\n'+hexRows(l.h):'');
+function conLine(l){
+  const d=el('div','cl c-'+l.c);
+  d.append(el('span','ct',(l.t/1000).toFixed(3)),el('span','cc',l.c),el('span','cx',l.x));
+  if(l.h){const b=el('button','chexb','hex'),p=el('div','chexv');p.hidden=true;p.textContent=hexRows(l.h);b.onclick=()=>{p.hidden=!p.hidden};d.append(b,p)}
+  return d}
+function conPush(l){
+  CON.lines.push(l);if(CON.lines.length>500)CON.lines.shift();
+  if(!conBox)return;
+  const stick=conBox.scrollHeight-conBox.scrollTop-conBox.clientHeight<40;
+  conBox.append(conLine(l));
+  while(conBox.children.length>400)conBox.removeChild(conBox.firstChild);
+  if(stick)conBox.scrollTop=conBox.scrollHeight}
+async function conPoll(){
+  if(conBusy||!DEV.on)return;conBusy=true;
+  try{
+    for(let n=0;n<5&&DEV.on;n++){
+      const j=await api('/api/console',{since:CON.last,boot:CON.boot});
+      if(!DEV.on)break;
+      if(!j.on){await api('/api/dev',{on:1},true);break}
+      if(CON.boot&&j.boot!==CON.boot){CON.lines=[];if(conBox)conBox.innerHTML='';conPush({s:0,t:0,c:'SYS',x:'The board restarted. Console cleared.'})}
+      CON.boot=j.boot;
+      if(j.lost>0)conPush({s:0,t:0,c:'SYS',x:j.lost+' older lines were dropped because the board only keeps the most recent ones.'});
+      for(const l of j.lines)conPush(l);
+      if(Number.isInteger(j.next))CON.last=j.next;
+      if(!j.more)break}
+  }catch(e){}
+  conBusy=false}
+function mkSw(label,onchg){
+  const r=el('div','trow'),s=el('label','switch'),c=el('input');c.type='checkbox';c.setAttribute('aria-label',label);
+  s.append(c,el('span','knob'));c.onchange=()=>onchg(c.checked,c);r.append(el('span',0,label),s);return[r,c]}
+
+function stopDev(){
+  if(!DEV.on)return;
+  DEV.on=false;clearInterval(DEV.t1);clearInterval(DEV.t2);
+  if(DEV.grid)DEV.grid.querySelectorAll('.devt').forEach(x=>x.remove());
+  if(DEV.btn){DEV.btn.textContent='Developer';DEV.btn.classList.remove('on')}
+  conBox=null;CON.lines=[];CON.last=0;CON.boot='';CON.polls=false;CON.paused=false;
+  DEV.grid=DEV.btn=null;
+  api('/api/dev',{on:0},true).catch(()=>{})}
+
+async function startDev(grid,btn){
+  try{await api('/api/dev',{on:1},true)}catch(e){toast(why(e));return}
+  DEV.on=true;DEV.grid=grid;DEV.btn=btn;btn.textContent='Developer on';btn.classList.add('on');
+  CON.lines=[];CON.last=0;CON.boot='';CON.polls=false;CON.paused=false;
+  const T=(cls,label)=>{const t=el('div','tile devt '+cls);t.append(el('div','tl',label));return t};
+  const tTemp=T('','Chip temperature'),nTemp=el('div','num','-');tTemp.append(nTemp);
+  const tCpu=T('','Johnify CPU use'),nCpu=el('div','num','-'),bCpu=el('div','bar'),fCpu=el('i');bCpu.append(fCpu);tCpu.append(nCpu,bCpu);
+  const tRam=T('wide','Memory'),nRam=el('div','num','-'),bRam=el('div','bar'),fRam=el('i'),sRam=el('div','sub2');bRam.append(fRam);tRam.append(nRam,bRam,sRam);
+  const tSto=T('wide','Storage'),tChip=T('wide','Chip'),tDev=T('wide','Connected devices'),tCon=T('wide','Live console');
+  tCon.append(el('div','sub2','Records requests, packets, encryption and Wi-Fi activity while this section is open. It never records chat codes, keys or message text.'));
+  const[rowPolls,cbPolls]=mkSw('Include polling requests',async(on,c)=>{try{await api('/api/dev',{polls:on?1:0},true);CON.polls=on}catch(e){c.checked=!on;toast(why(e))}});
+  const tools=el('div','tools'),bP=el('button','chip','PAUSE'),bC=el('button','chip','CLEAR'),bY=el('button','chip','COPY');
+  bP.onclick=()=>{CON.paused=!CON.paused;bP.textContent=CON.paused?'RESUME':'PAUSE';bP.classList.toggle('off',CON.paused)};
+  bC.onclick=async()=>{CON.lines=[];if(conBox)conBox.innerHTML='';try{await api('/api/dev',{clear:1},true)}catch(e){toast(why(e))}};
+  bY.onclick=()=>{const t=CON.lines.map(conText).join('\n');let ok=false;try{const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();ok=document.execCommand('copy');a.remove()}catch(e){}toast(ok?'Console copied':'Could not copy automatically.')};
+  tools.append(bP,bC,bY);
+  const filt=el('div','tools');
+  CATS.forEach(c=>{const b=el('button','chip',c);b.onclick=()=>{CON.hidden[c]=!CON.hidden[c];b.classList.toggle('off',!!CON.hidden[c]);if(conBox)conBox.classList.toggle('hide-'+c,!!CON.hidden[c])};if(CON.hidden[c])b.classList.add('off');filt.append(b)});
+  conBox=el('div','con');conBox.setAttribute('role','log');CATS.forEach(c=>{if(CON.hidden[c])conBox.classList.add('hide-'+c)});
+  tCon.append(rowPolls,tools,filt,conBox);
+  [tTemp,tCpu,tRam,tSto,tChip,tDev,tCon].forEach(t=>grid.append(t));
+  if(tTemp.scrollIntoView)tTemp.scrollIntoView({block:'start',behavior:'auto'});
+  const perf=async()=>{
+    if(!DEV.on||document.hidden)return;
+    try{
+      const p=await api('/api/perf');
+      if(!DEV.on||p.on===false)return;
+      nTemp.textContent=p.temp==null?'n/a':p.temp.toFixed(1)+'\u00b0C';
+      nCpu.textContent=p.cpu+'%';fCpu.style.width=Math.min(100,p.cpu)+'%';bCpu.className='bar'+(p.cpu>80?' hot':'');
+      const used=p.heapTotal-p.heapFree,pct=p.heapTotal?Math.round(used*100/p.heapTotal):0;
+      nRam.textContent=pct+'% used';fRam.style.width=pct+'%';bRam.className='bar'+(pct>85?' hot':'');
+      sRam.textContent=fmtB(p.heapFree)+' free of '+fmtB(p.heapTotal)+(p.heapMax!=null?' \u00b7 largest free block '+fmtB(p.heapMax):'')+(p.psramTotal?' \u00b7 PSRAM '+fmtB(p.psramFree)+' free of '+fmtB(p.psramTotal):'');
+      const sr=[['Flash chip',fmtB(p.flash)]];
+      if(p.sketch!=null)sr.push(['Program size',fmtB(p.sketch)],['Free for updates',fmtB(p.sketchFree)]);
+      if(p.fsTotal!=null)sr.push(['Files used',fmtB(p.fsTotal-p.fsFree)+' of '+fmtB(p.fsTotal)],['Files free',fmtB(p.fsFree)]);
+      kvRows(tSto,sr);
+      kvRows(tChip,[['Chip',p.chip+(p.cores?' ('+p.cores+' cores)':'')],['Clock',p.mhz+' MHz'],['Last restart',p.reset],['Uptime',fmtUp(p.up)]]);
+      const dr=[['Wi-Fi devices',p.sta.length]];
+      p.sta.forEach(s=>dr.push([s.mac,s.rssi==null?'':s.rssi+' dBm']));
+      p.clients.forEach(c=>dr.push([c.ip,c.n+' requests, '+c.age+'s ago']));
+      kvRows(tDev,dr);
+    }catch(e){}};
+  perf();conPoll();
+  DEV.t1=setInterval(perf,2000);
+  DEV.t2=setInterval(()=>{if(!CON.paused&&!document.hidden)conPoll()},1000)}
+
 function drawSettings(v){
   const scr=el('div','scr'),head=el('div','chead'),ttl=el('div','cmid');
   ttl.append(el('span','clab','Johnify'),el('span','ccode','Settings'));ttl.style.cursor='default';ttl.lastChild.style.letterSpacing='.04em';
-  head.append(backBtn(),ttl);
+  const dv=el('button','leave','Developer');
+  head.append(backBtn(),ttl,dv);
   const page=el('div','page'),grid=el('div','bento');
   page.append(rise(el('h1','ptitle','Settings'),0),grid);
 
@@ -391,6 +506,7 @@ function drawSettings(v){
   bug.append(bt,box);
 
   [rep,tHeard,tSent,tRel,prof,net,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
+  dv.onclick=()=>{if(DEV.on)stopDev();else startDev(grid,dv)};
   scr.append(head,page);v.append(scr);
 
   const rows=(host,list)=>{[...host.querySelectorAll('.kv')].forEach(x=>x.remove());
@@ -415,6 +531,7 @@ $('#modal').onclick=e=>{if(e.target===$('#modal'))closeJoin()};
 $('#jg').onclick=async()=>{const c=await joinRoom($('#jc').value);if(c){closeJoin();nav('chat',c)}};
 $('#jc').onkeydown=e=>{if(e.key==='Enter')$('#jg').click();if(e.key==='Escape')closeJoin()};
 addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#cmodal').hidden)$('#cn').click()});
+addEventListener('pagehide',()=>{if(DEV.on){try{fetch('/api/dev',{method:'POST',body:new URLSearchParams({on:0}),keepalive:true})}catch(e){}}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
 let errShown=false;
 addEventListener('error',()=>{if(!errShown){errShown=true;toast('Something went wrong. Reload the page if it keeps happening.')}});
