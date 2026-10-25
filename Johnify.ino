@@ -32,6 +32,11 @@
 #define CON_WIDTH 160
 #define PKT_SLOTS 12
 #define DEV_LEASE_MS 8000
+#define BEACON_MS      30000   // A board announces itself this often (plus up to 5 s of random delay).
+#define BEACON_TTL_MS  100000  // A board not heard from for this long is no longer counted as in range.
+#define BEACON_GRACE   40000   // After start-up, "looking for boards" is shown for this long.
+#define BEACON_MAX     16      // Other boards remembered at once.
+#define BEACON_LEN     8
 
 struct __attribute__((packed)) Pkt {
   uint8_t  magic[2];
@@ -46,6 +51,15 @@ struct __attribute__((packed)) Pkt {
 #define PKT_HDR 32
 static_assert(offsetof(Pkt, body) == PKT_HDR, "packet header should be 32 bytes");
 static_assert(sizeof(Pkt) <= 250, "ESP-NOW packets can be at most 250 bytes");
+
+// Beacon: 8 bytes. 'J' 'B', version (1), board ID (4 bytes, random at each start), flags (bit 0 = repeater).
+struct __attribute__((packed)) Beacon {
+  uint8_t  magic[2];
+  uint8_t  ver;
+  uint32_t id;
+  uint8_t  flags;
+};
+static_assert(sizeof(Beacon) == BEACON_LEN, "beacon should be 8 bytes");
 
 struct Out { char *b; size_t cap; size_t n; };
 
@@ -72,6 +86,11 @@ uint32_t restartAt = 0;
 uint32_t lastHealth = 0;
 uint8_t  lowHeapCount = 0;
 uint8_t  txFailStreak = 0;
+uint32_t beaconId;
+uint32_t nextBeacon = 0;
+uint32_t nearId[BEACON_MAX];
+uint32_t nearAt[BEACON_MAX];
+bool     nearUsed[BEACON_MAX];
 
 char     logLines[LOG_LINES][LOG_WIDTH];
 uint8_t  logHead = 0;
@@ -165,6 +184,8 @@ header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;paddi
 @media(max-width:380px){.word{font-size:28px}.btn{padding:9px 9px;font-size:12px}.icon{width:34px;height:34px}}
 #warn{flex:none;padding:8px 14px;background:var(--acc);color:var(--acctx);font:700 13px/1.35 var(--sans)}
 #warn[hidden]{display:none}
+#near{flex:none;padding:4px 14px;border-bottom:1px solid var(--rule);color:var(--mute);font:600 12px/1.3 var(--sans)}
+#near[hidden]{display:none}
 #view{flex:1;min-height:0;display:flex;flex-direction:column}
 .scr{flex:1;min-height:0;display:flex;flex-direction:column}
 .list{flex:1;overflow-y:auto;display:flex;flex-direction:column;padding:16px 14px 24px}
@@ -274,6 +295,7 @@ textarea{display:block;width:100%;min-height:44px;max-height:120px;resize:none;b
  <button id="bSet" class="icon" aria-label="Settings"></button>
 </header>
 <div id="warn" hidden role="alert"></div>
+<div id="near" hidden title="Other Johnify boards this board has heard in the last couple of minutes. It counts boards, not people or chats."></div>
 <main id="view"></main>
 <div id="modal" hidden><div class="box" role="dialog" aria-modal="true" aria-labelledby="mt">
  <h3 id="mt">Join a chat</h3>
@@ -333,9 +355,14 @@ function ask(title,text,okLabel){
     const done=v=>{m.hidden=true;y.onclick=n.onclick=m.onclick=null;res(v)};
     y.onclick=()=>done(true);n.onclick=()=>done(false);m.onclick=e=>{if(e.target===m)done(false)};
     n.focus()})}
+function setNear(n){
+  const e=$('#near');
+  if(!Number.isInteger(n)||!$('#warn').hidden){e.hidden=true;return}
+  e.textContent=n<0?'Looking for other boards\u2026':n===0?'No other boards in range':n===1?'1 board in range':n+' boards in range';e.hidden=false}
 function setLink(ok){
   $('#dot').className='dot '+(ok?'on':'off');$('#dot').title=ok?'Connected to the board':'Not connected';
   if(ok){fails=0;$('#warn').hidden=true;return}
+  $('#near').hidden=true;
   if(++fails>=2){const w=$('#warn');w.textContent='No connection to the board. Join the Wi-Fi network '+(S.ssid||'Johnify-XXXX')+' and keep this page open.';w.hidden=false}}
 
 async function api(p,o,post){
@@ -386,7 +413,7 @@ async function poll(){
     if(!S.dev)await hello();
     const j=await api('/api/poll',{since:S.since,boot:S.boot,r:S.rooms.join(',')});
     if(typeof j.boot!=='string'||!Number.isInteger(j.next))throw Object.assign(new Error('offline'),{net:true});
-    S.boot=j.boot;S.since=j.next;ingest(j.msgs);save();setLink(true)}
+    S.boot=j.boot;S.since=j.next;ingest(j.msgs);save();setLink(true);setNear(j.near)}
   catch(e){setLink(false)}
   busy=false;
   if(again){again=false;poll()}}
@@ -929,6 +956,45 @@ void storeMsg(const char *room, const char *name, const char *text, uint32_t dev
   strncpy(m.text, text, MAX_TEXT); m.text[MAX_TEXT] = 0;
 }
 
+int nearCount() {
+  uint32_t now = millis();
+  int n = 0;
+  for (int i = 0; i < BEACON_MAX; i++) {
+    if (!nearUsed[i]) continue;
+    if (now - nearAt[i] > BEACON_TTL_MS) nearUsed[i] = false; else n++;
+  }
+  if (n == 0 && now < BEACON_GRACE) return -1;
+  return n;
+}
+
+bool enqueueTx(const Pkt &p, uint8_t len, uint32_t delayMs);
+
+void beaconTick() {
+  uint32_t now = millis();
+  if ((int32_t)(now - nextBeacon) < 0) return;
+  nextBeacon = now + BEACON_MS + (esp_random() % 5000);
+  Pkt p; memset(&p, 0, sizeof p);
+  Beacon *b = (Beacon *)&p;
+  b->magic[0] = 'J'; b->magic[1] = 'B'; b->ver = 1; b->id = beaconId; b->flags = repeaterOn ? 1 : 0;
+  enqueueTx(p, BEACON_LEN, 0);
+}
+
+void handleBeacon(const uint8_t *raw, int len) {
+  if (len != BEACON_LEN) { statBad++; if (devOn) confPkt(C_RX, raw, len, "RX rejected: wrong beacon size (%d bytes)", len); return; }
+  Beacon b; memcpy(&b, raw, sizeof b);
+  if (b.ver != 1 || b.id == beaconId) return;
+  int slot = -1, oldest = 0;
+  bool isNew = true;
+  for (int i = 0; i < BEACON_MAX; i++) {
+    if (nearUsed[i] && nearId[i] == b.id) { slot = i; isNew = false; break; }
+    if (!nearUsed[i]) { if (slot < 0) slot = i; }
+    else if (millis() - nearAt[i] > millis() - nearAt[oldest]) oldest = i;
+  }
+  if (slot < 0) slot = oldest;
+  nearUsed[slot] = true; nearId[slot] = b.id; nearAt[slot] = millis();
+  if (devOn) confPkt(C_RX, raw, len, "RX beacon from board %08x%s%s", (unsigned)b.id, (b.flags & 1) ? " (repeater)" : "", isNew ? ", newly heard" : "");
+}
+
 bool enqueueTx(const Pkt &p, uint8_t len, uint32_t delayMs) {
   for (int i = 0; i < TXQ_SIZE; i++) if (!txq[i].used) {
     txq[i].used = true; txq[i].at = millis() + delayMs; txq[i].len = len; txq[i].tries = 0;
@@ -942,7 +1008,12 @@ void processTx() {
   for (int i = 0; i < TXQ_SIZE; i++) {
     if (!txq[i].used || (int32_t)(millis() - txq[i].at) < 0) continue;
     esp_err_t e = esp_now_send(BCAST, (const uint8_t *)&txq[i].p, txq[i].len);
-    if (e == ESP_OK) {
+    bool isBeacon = txq[i].p.magic[1] == 'B';
+    if (e == ESP_OK && isBeacon) {
+      txq[i].used = false; txFailStreak = 0;
+      if (devOn) confPkt(C_TX, (const uint8_t *)&txq[i].p, txq[i].len, "TX beacon");
+    }
+    else if (e == ESP_OK) {
       txq[i].used = false; statTx++; txFailStreak = 0; blinkLed();
       if (devOn) {
         char tg[7];
@@ -969,7 +1040,7 @@ void onRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
 void onRecv(const uint8_t *mac, const uint8_t *data, int len)
 #endif
 {
-  if (len < PKT_HDR || len > (int)sizeof(Pkt)) { statBad++; return; }
+  if (len < BEACON_LEN || len > (int)sizeof(Pkt)) { statBad++; return; }
   portENTER_CRITICAL(&rxMux);
   int next = (rxHead + 1) % RXQ_SIZE;
   if (next != rxTail) {
@@ -996,7 +1067,8 @@ bool startNow() {
 
 void handlePacket(const Pkt &p, int len) {
   const uint8_t *raw = (const uint8_t *)&p;
-  if (p.magic[0] != 'J' || p.magic[1] != 'F') {
+  if (p.magic[0] == 'J' && p.magic[1] == 'B') { handleBeacon(raw, len); return; }
+  if (len < PKT_HDR || p.magic[0] != 'J' || p.magic[1] != 'F') {
     statBad++;
     if (devOn) confPkt(C_RX, raw, len, "RX rejected: not a Johnify packet (%d bytes)", len);
     return;
@@ -1213,23 +1285,23 @@ void handlePoll() {
     count++;
     last = seq;
   }
-  outF(o, "],\"next\":%lu}", (unsigned long)last);
+  outF(o, "],\"next\":%lu,\"near\":%d}", (unsigned long)last, nearCount());
   sendJson(o.b);
 }
 
 void handleStatus() {
   int n = 0; for (int i = 0; i < MAX_ROOMS; i++) if (rooms[i].used) n++;
   char sdk[24]; strncpy(sdk, ESP.getSdkVersion(), sizeof sdk - 1); sdk[sizeof sdk - 1] = 0;
-  char out[600];
+  char out[680];
   snprintf(out, sizeof out,
            "{\"ver\":\"%s\",\"chip\":\"%s\",\"sdk\":\"%s\",\"repeater\":%s,\"ssid\":\"%s\",\"ch\":%d,\"hops\":%d,"
            "\"clients\":%d,\"rooms\":%d,\"rx\":%lu,\"tx\":%lu,\"relayed\":%lu,"
            "\"rxDrop\":%lu,\"txFail\":%lu,\"bad\":%lu,\"auth\":%lu,\"reinit\":%lu,"
-           "\"heap\":%lu,\"minHeap\":%lu,\"up\":%lu}",
+           "\"near\":%d,\"heap\":%lu,\"minHeap\":%lu,\"up\":%lu}",
            VERSION, ESP.getChipModel(), sdk, repeaterOn ? "true" : "false", apSsid, WIFI_CHANNEL, MAX_HOPS,
            (int)WiFi.softAPgetStationNum(), n, (unsigned long)statRx, (unsigned long)statTx, (unsigned long)statRelay,
            (unsigned long)statRxDrop, (unsigned long)statTxFail, (unsigned long)statBad, (unsigned long)statAuth,
-           (unsigned long)statReinit, (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(),
+           (unsigned long)statReinit, nearCount(), (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(),
            (unsigned long)(millis() / 1000));
   sendJson(out);
 }
@@ -1284,6 +1356,7 @@ void handleReset() {
   rxHead = 0; rxTail = 0;
   portEXIT_CRITICAL(&rxMux);
   seenPos = 0; nextSeq = 1; logHead = 0; logCount = 0;
+  memset(nearUsed, 0, sizeof nearUsed);
   statRx = statTx = statRelay = statTxFail = statBad = statAuth = statReinit = 0;
   statRxDrop = 0; txFailStreak = 0; lowHeapCount = 0;
   repeaterOn = false;
@@ -1518,6 +1591,8 @@ void setup() {
   pinMode(LED_BUILTIN, OUTPUT); digitalWrite(LED_BUILTIN, HIGH);
 #endif
   bootId = esp_random();
+  beaconId = esp_random();
+  nextBeacon = millis() + 2000 + (esp_random() % 3000);
   memset(rooms, 0, sizeof rooms); memset(txq, 0, sizeof txq); memset(seenKeys, 0, sizeof seenKeys);
   memset(logLines, 0, sizeof logLines);
   logEvent("Johnify %s starting", VERSION);
@@ -1578,6 +1653,7 @@ void loop() {
     Guard g;
     uint32_t t0 = devOn ? micros() : 0;
     processRx();
+    beaconTick();
     processTx();
     healthCheck();
     if (devOn) { sampler(); busyUs += micros() - t0; }
