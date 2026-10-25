@@ -5,6 +5,7 @@
 #include <stdarg.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
+#include <esp_system.h>
 #include <mbedtls/gcm.h>
 #include <mbedtls/sha256.h>
 #include <freertos/semphr.h>
@@ -23,10 +24,14 @@
 #define SEEN_SIZE      256          // How many recent message IDs are remembered to spot duplicates.
 #define TXQ_SIZE       16           // Packets waiting to be sent.
 #define RXQ_SIZE       16           // Packets waiting to be processed.
+#define CON_LINES      80           // Developer console lines kept in memory while Developer mode is on.
 
-#define VERSION   "1.3.0"
+#define VERSION   "1.4.0"
 #define LOG_LINES 16
 #define LOG_WIDTH 72
+#define CON_WIDTH 160
+#define PKT_SLOTS 12
+#define DEV_LEASE_MS 8000
 
 struct __attribute__((packed)) Pkt {
   uint8_t  magic[2];
@@ -99,6 +104,33 @@ volatile int rxHead = 0, rxTail = 0;
 portMUX_TYPE rxMux = portMUX_INITIALIZER_UNLOCKED;
 
 char pollBuf[6144];
+char conBuf[9000];
+
+enum { C_SYS, C_HTTP, C_RX, C_TX, C_CRYPTO, C_CHAT, C_WIFI };
+const char *const CAT_NAMES[] = {"SYS", "HTTP", "RX", "TX", "CRYPTO", "CHAT", "WIFI"};
+
+struct ConLine { uint32_t seq; uint32_t ms; uint8_t cat; int8_t pk; char text[CON_WIDTH]; };
+struct PktRec { uint32_t seq; uint8_t len; uint8_t data[250]; };
+struct ClientRec { uint32_t ip; uint32_t last; uint32_t count; };
+
+ConLine   conLines[CON_LINES];
+PktRec    pktRecs[PKT_SLOTS];
+ClientRec clients[8];
+uint32_t  logMs[LOG_LINES];
+uint32_t  conSeq = 1;
+uint8_t   pktHead = 0;
+bool      devOn = false;
+bool      devPolls = false;
+uint32_t  devUntil = 0;
+uint32_t  busyUs = 0;
+uint8_t   cpuPct = 0;
+uint32_t  lastSample = 0;
+uint8_t   staMac[10][6];
+int8_t    staRssi[10];
+int       staN = 0;
+int       lastStatus = 0;
+size_t    lastBytes = 0;
+portMUX_TYPE conMux = portMUX_INITIALIZER_UNLOCKED;
 
 const char INDEX_HTML[] PROGMEM = R"HTML(<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -204,6 +236,24 @@ textarea{display:block;width:100%;min-height:44px;max-height:120px;resize:none;b
 .switch input:checked+.knob:after{transform:translateX(26px)}
 .field{width:100%;margin:2px 0 12px;padding:6px 0;border:0;border-bottom:2px solid var(--ink);border-radius:0;background:none;font:700 18px var(--sans);outline:none}
 .rep{width:100%;height:170px;margin-top:12px;font:500 12px/1.4 ui-monospace,Menlo,Consolas,monospace}
+@media(max-width:380px){.tile .num{font-size:34px}}
+.bar{height:10px;margin-top:10px;border:2px solid currentColor;border-radius:5px;overflow:hidden}
+.bar i{display:block;height:100%;width:0;background:currentColor;transition:width .3s}
+.bar.hot i{background:var(--acc)}
+.sub2{margin-top:8px;font-size:13px;opacity:.8}
+.trow{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--rule);font-size:14px}
+.tools{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.chip{padding:6px 10px;border:2px solid var(--ink);border-radius:6px;background:none;font:800 10px var(--sans);letter-spacing:.08em;cursor:pointer}
+.chip.off{opacity:.4}
+.leave.on{font-weight:800}
+.con{height:46dvh;min-height:260px;margin-top:10px;padding:8px 10px;overflow-y:auto;border-radius:8px;background:#12140f;color:#e8e3d3;font:500 11.5px/1.5 ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+.cl{padding:1px 0;white-space:pre-wrap;word-break:break-word}
+.ct{margin-right:6px;opacity:.45}
+.cc{display:inline-block;min-width:6ch;margin-right:6px;font-weight:800}
+.c-SYS .cc{color:#9b9584}.c-HTTP .cc{color:#e8e3d3}.c-RX .cc{color:#6cc09a}.c-TX .cc{color:#ff8a63}.c-CRYPTO .cc{color:#e0c060}.c-CHAT .cc{color:#7fb0d8}.c-WIFI .cc{color:#c9a574}
+.chexb{margin-left:6px;padding:0 6px;border:1px solid #6b6556;border-radius:4px;background:none;color:#e8e3d3;font:inherit;font-size:10px;cursor:pointer}
+.chexv{margin:2px 0 4px 6px;padding:6px;border-left:2px solid #6b6556;color:#b8b29f;word-break:break-all}
+.con.hide-SYS .c-SYS,.con.hide-HTTP .c-HTTP,.con.hide-RX .c-RX,.con.hide-TX .c-TX,.con.hide-CRYPTO .c-CRYPTO,.con.hide-CHAT .c-CHAT,.con.hide-WIFI .c-WIFI{display:none}
 #modal,#cmodal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:20px;background:rgba(10,9,6,.6)}
 #modal[hidden],#cmodal[hidden]{display:none}
 .box{width:100%;max-width:340px;padding:20px;border:2px solid var(--ink);border-radius:10px;background:var(--paper)}
@@ -382,6 +432,7 @@ addEventListener('popstate',e=>{
 try{history.replaceState({v:'list',c:null},'')}catch(e){}
 
 function render(){
+  stopDev();
   $('#bSet').classList.toggle('on',view==='settings');
   clearInterval(stT);
   const v=$('#view');v.innerHTML='';
@@ -459,10 +510,106 @@ async function report(box){
     toast(ok?'Bug report copied. Paste it where you need it.':'Could not copy automatically. Select the text and copy it.')
   }catch(e){toast(why(e))}}
 
+const fmtB=n=>n==null?'-':n>=1048576?(n/1048576).toFixed(1)+' MB':n>=1024?Math.round(n/1024)+' KB':n+' B';
+const CATS=['SYS','HTTP','RX','TX','CRYPTO','CHAT','WIFI'];
+const CON={boot:'',last:0,lines:[],hidden:{},paused:false,polls:false};
+const DEV={on:false,grid:null,btn:null,t1:null,t2:null};
+let conBox=null,conBusy=false;
+const kvl=(k,x)=>{const d=el('div','kv');d.append(el('span',0,k),el('b',0,String(x)));return d};
+const kvRows=(host,list)=>{[...host.querySelectorAll('.kv')].forEach(x=>x.remove());for(const[k,x,bad]of list){const d=kvl(k,x);if(bad)d.lastChild.className='warnv';host.append(d)}};
+const hexRows=h=>{const o=[];for(let i=0;i<h.length;i+=32)o.push(h.slice(i,i+32).replace(/(..)/g,'$1 ').trim());return o.join('\n')};
+const conText=l=>'['+(l.t/1000).toFixed(3)+'] '+l.c+' '+l.x+(l.h?'\n'+hexRows(l.h):'');
+function conLine(l){
+  const d=el('div','cl c-'+l.c);
+  d.append(el('span','ct',(l.t/1000).toFixed(3)),el('span','cc',l.c),el('span','cx',l.x));
+  if(l.h){const b=el('button','chexb','hex'),p=el('div','chexv');p.hidden=true;p.textContent=hexRows(l.h);b.onclick=()=>{p.hidden=!p.hidden};d.append(b,p)}
+  return d}
+function conPush(l){
+  CON.lines.push(l);if(CON.lines.length>500)CON.lines.shift();
+  if(!conBox)return;
+  const stick=conBox.scrollHeight-conBox.scrollTop-conBox.clientHeight<40;
+  conBox.append(conLine(l));
+  while(conBox.children.length>400)conBox.removeChild(conBox.firstChild);
+  if(stick)conBox.scrollTop=conBox.scrollHeight}
+async function conPoll(){
+  if(conBusy||!DEV.on)return;conBusy=true;
+  try{
+    for(let n=0;n<5&&DEV.on;n++){
+      const j=await api('/api/console',{since:CON.last,boot:CON.boot});
+      if(!DEV.on)break;
+      if(!j.on){await api('/api/dev',{on:1},true);break}
+      if(CON.boot&&j.boot!==CON.boot){CON.lines=[];if(conBox)conBox.innerHTML='';conPush({s:0,t:0,c:'SYS',x:'The board restarted. Console cleared.'})}
+      CON.boot=j.boot;
+      if(j.lost>0)conPush({s:0,t:0,c:'SYS',x:j.lost+' older lines were dropped because the board only keeps the most recent ones.'});
+      for(const l of j.lines)conPush(l);
+      if(Number.isInteger(j.next))CON.last=j.next;
+      if(!j.more)break}
+  }catch(e){}
+  conBusy=false}
+function mkSw(label,onchg){
+  const r=el('div','trow'),s=el('label','switch'),c=el('input');c.type='checkbox';c.setAttribute('aria-label',label);
+  s.append(c,el('span','knob'));c.onchange=()=>onchg(c.checked,c);r.append(el('span',0,label),s);return[r,c]}
+
+function stopDev(){
+  if(!DEV.on)return;
+  DEV.on=false;clearInterval(DEV.t1);clearInterval(DEV.t2);
+  if(DEV.grid)DEV.grid.querySelectorAll('.devt').forEach(x=>x.remove());
+  if(DEV.btn){DEV.btn.textContent='Developer';DEV.btn.classList.remove('on')}
+  conBox=null;CON.lines=[];CON.last=0;CON.boot='';CON.polls=false;CON.paused=false;
+  DEV.grid=DEV.btn=null;
+  api('/api/dev',{on:0},true).catch(()=>{})}
+
+async function startDev(grid,btn){
+  try{await api('/api/dev',{on:1},true)}catch(e){toast(why(e));return}
+  DEV.on=true;DEV.grid=grid;DEV.btn=btn;btn.textContent='Developer on';btn.classList.add('on');
+  CON.lines=[];CON.last=0;CON.boot='';CON.polls=false;CON.paused=false;
+  const T=(cls,label)=>{const t=el('div','tile devt '+cls);t.append(el('div','tl',label));return t};
+  const tTemp=T('','Chip temperature'),nTemp=el('div','num','-');tTemp.append(nTemp);
+  const tCpu=T('','Johnify CPU use'),nCpu=el('div','num','-'),bCpu=el('div','bar'),fCpu=el('i');bCpu.append(fCpu);tCpu.append(nCpu,bCpu);
+  const tRam=T('wide','Memory'),nRam=el('div','num','-'),bRam=el('div','bar'),fRam=el('i'),sRam=el('div','sub2');bRam.append(fRam);tRam.append(nRam,bRam,sRam);
+  const tSto=T('wide','Storage'),tChip=T('wide','Chip'),tDev=T('wide','Connected devices'),tCon=T('wide','Live console');
+  tCon.append(el('div','sub2','Records requests, packets, encryption and Wi-Fi activity while this section is open. It never records chat codes, keys or message text.'));
+  const[rowPolls,cbPolls]=mkSw('Include polling requests',async(on,c)=>{try{await api('/api/dev',{polls:on?1:0},true);CON.polls=on}catch(e){c.checked=!on;toast(why(e))}});
+  const tools=el('div','tools'),bP=el('button','chip','PAUSE'),bC=el('button','chip','CLEAR'),bY=el('button','chip','COPY');
+  bP.onclick=()=>{CON.paused=!CON.paused;bP.textContent=CON.paused?'RESUME':'PAUSE';bP.classList.toggle('off',CON.paused)};
+  bC.onclick=async()=>{CON.lines=[];if(conBox)conBox.innerHTML='';try{await api('/api/dev',{clear:1},true)}catch(e){toast(why(e))}};
+  bY.onclick=()=>{const t=CON.lines.map(conText).join('\n');let ok=false;try{const a=document.createElement('textarea');a.value=t;document.body.appendChild(a);a.select();ok=document.execCommand('copy');a.remove()}catch(e){}toast(ok?'Console copied':'Could not copy automatically.')};
+  tools.append(bP,bC,bY);
+  const filt=el('div','tools');
+  CATS.forEach(c=>{const b=el('button','chip',c);b.onclick=()=>{CON.hidden[c]=!CON.hidden[c];b.classList.toggle('off',!!CON.hidden[c]);if(conBox)conBox.classList.toggle('hide-'+c,!!CON.hidden[c])};if(CON.hidden[c])b.classList.add('off');filt.append(b)});
+  conBox=el('div','con');conBox.setAttribute('role','log');CATS.forEach(c=>{if(CON.hidden[c])conBox.classList.add('hide-'+c)});
+  tCon.append(rowPolls,tools,filt,conBox);
+  [tTemp,tCpu,tRam,tSto,tChip,tDev,tCon].forEach(t=>grid.append(t));
+  if(tTemp.scrollIntoView)tTemp.scrollIntoView({block:'start',behavior:'auto'});
+  const perf=async()=>{
+    if(!DEV.on||document.hidden)return;
+    try{
+      const p=await api('/api/perf');
+      if(!DEV.on||p.on===false)return;
+      nTemp.textContent=p.temp==null?'n/a':p.temp.toFixed(1)+'\u00b0C';
+      nCpu.textContent=p.cpu+'%';fCpu.style.width=Math.min(100,p.cpu)+'%';bCpu.className='bar'+(p.cpu>80?' hot':'');
+      const used=p.heapTotal-p.heapFree,pct=p.heapTotal?Math.round(used*100/p.heapTotal):0;
+      nRam.textContent=pct+'% used';fRam.style.width=pct+'%';bRam.className='bar'+(pct>85?' hot':'');
+      sRam.textContent=fmtB(p.heapFree)+' free of '+fmtB(p.heapTotal)+(p.heapMax!=null?' \u00b7 largest free block '+fmtB(p.heapMax):'')+(p.psramTotal?' \u00b7 PSRAM '+fmtB(p.psramFree)+' free of '+fmtB(p.psramTotal):'');
+      const sr=[['Flash chip',fmtB(p.flash)]];
+      if(p.sketch!=null)sr.push(['Program size',fmtB(p.sketch)],['Free for updates',fmtB(p.sketchFree)]);
+      if(p.fsTotal!=null)sr.push(['Files used',fmtB(p.fsTotal-p.fsFree)+' of '+fmtB(p.fsTotal)],['Files free',fmtB(p.fsFree)]);
+      kvRows(tSto,sr);
+      kvRows(tChip,[['Chip',p.chip+(p.cores?' ('+p.cores+' cores)':'')],['Clock',p.mhz+' MHz'],['Last restart',p.reset],['Uptime',fmtUp(p.up)]]);
+      const dr=[['Wi-Fi devices',p.sta.length]];
+      p.sta.forEach(s=>dr.push([s.mac,s.rssi==null?'':s.rssi+' dBm']));
+      p.clients.forEach(c=>dr.push([c.ip,c.n+' requests, '+c.age+'s ago']));
+      kvRows(tDev,dr);
+    }catch(e){}};
+  perf();conPoll();
+  DEV.t1=setInterval(perf,2000);
+  DEV.t2=setInterval(()=>{if(!CON.paused&&!document.hidden)conPoll()},1000)}
+
 function drawSettings(v){
   const scr=el('div','scr'),head=el('div','chead'),ttl=el('div','cmid');
   ttl.append(el('span','clab','Johnify'),el('span','ccode','Settings'));ttl.style.cursor='default';ttl.lastChild.style.letterSpacing='.04em';
-  head.append(backBtn(),ttl);
+  const dv=el('button','leave','Developer');
+  head.append(backBtn(),ttl,dv);
   const page=el('div','page'),grid=el('div','bento');
   page.append(rise(el('h1','ptitle','Settings'),0),grid);
 
@@ -493,6 +640,7 @@ function drawSettings(v){
   bug.append(bt,box);
 
   [rep,tHeard,tSent,tRel,prof,net,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
+  dv.onclick=()=>{if(DEV.on)stopDev();else startDev(grid,dv)};
   scr.append(head,page);v.append(scr);
 
   const rows=(host,list)=>{[...host.querySelectorAll('.kv')].forEach(x=>x.remove());
@@ -517,6 +665,7 @@ $('#modal').onclick=e=>{if(e.target===$('#modal'))closeJoin()};
 $('#jg').onclick=async()=>{const c=await joinRoom($('#jc').value);if(c){closeJoin();nav('chat',c)}};
 $('#jc').onkeydown=e=>{if(e.key==='Enter')$('#jg').click();if(e.key==='Escape')closeJoin()};
 addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('#cmodal').hidden)$('#cn').click()});
+addEventListener('pagehide',()=>{if(DEV.on){try{fetch('/api/dev',{method:'POST',body:new URLSearchParams({on:0}),keepalive:true})}catch(e){}}});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)poll()});
 let errShown=false;
 addEventListener('error',()=>{if(!errShown){errShown=true;toast('Something went wrong. Reload the page if it keeps happening.')}});
@@ -526,16 +675,91 @@ render();setTimeout(()=>document.body.classList.remove('boot'),1400);
 hello().catch(()=>{});tick();
 </script></body></html>)HTML";
 
+void conStore(uint8_t cat, const char *text, uint32_t ms, const uint8_t *data, size_t dlen) {
+  portENTER_CRITICAL(&conMux);
+  uint32_t seq = conSeq++;
+  ConLine &l = conLines[(seq - 1) % CON_LINES];
+  l.seq = seq; l.ms = ms; l.cat = cat; l.pk = -1;
+  strncpy(l.text, text, CON_WIDTH - 1); l.text[CON_WIDTH - 1] = 0;
+  if (data && dlen) {
+    uint8_t slot = pktHead;
+    pktHead = (pktHead + 1) % PKT_SLOTS;
+    pktRecs[slot].seq = seq; pktRecs[slot].len = (uint8_t)dlen; memcpy(pktRecs[slot].data, data, dlen);
+    l.pk = (int8_t)slot;
+  }
+  portEXIT_CRITICAL(&conMux);
+}
+
+void conf(uint8_t cat, const char *fmt, ...) {
+  if (!devOn) return;
+  char tmp[CON_WIDTH];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(tmp, sizeof tmp, fmt, ap);
+  va_end(ap);
+  conStore(cat, tmp, millis(), NULL, 0);
+}
+
+void confPkt(uint8_t cat, const uint8_t *data, size_t len, const char *fmt, ...) {
+  if (!devOn) return;
+  char tmp[CON_WIDTH];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(tmp, sizeof tmp, fmt, ap);
+  va_end(ap);
+  conStore(cat, tmp, millis(), data, len);
+}
+
+void gidTag(const uint8_t *gid, char *out) { snprintf(out, 7, "%02x%02x%02x", gid[0], gid[1], gid[2]); }
+
+void clearConsole() {
+  portENTER_CRITICAL(&conMux);
+  memset(conLines, 0, sizeof conLines);
+  memset(pktRecs, 0, sizeof pktRecs);
+  portEXIT_CRITICAL(&conMux);
+}
+
 void logEvent(const char *fmt, ...) {
   char tmp[56];
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(tmp, sizeof tmp, fmt, ap);
   va_end(ap);
-  snprintf(logLines[logHead], LOG_WIDTH, "%lus %s", (unsigned long)(millis() / 1000), tmp);
+  uint32_t now = millis();
+  logMs[logHead] = now;
+  snprintf(logLines[logHead], LOG_WIDTH, "%lus %s", (unsigned long)(now / 1000), tmp);
   logHead = (logHead + 1) % LOG_LINES;
   logCount++;
   Serial.printf("[johnify] %s\n", tmp);
+  if (devOn) conStore(C_SYS, tmp, now, NULL, 0);
+}
+
+void devStop() {
+  devOn = false;
+  devPolls = false;
+  clearConsole();
+  memset(clients, 0, sizeof clients);
+  staN = 0; busyUs = 0; cpuPct = 0;
+}
+
+void devStart() {
+  if (!devOn) {
+    clearConsole();
+    memset(clients, 0, sizeof clients);
+    busyUs = 0; cpuPct = 0; staN = 0; lastSample = millis();
+    devOn = true;
+    uint8_t n = logCount < LOG_LINES ? (uint8_t)logCount : LOG_LINES;
+    for (uint8_t i = 0; i < n; i++) {
+      uint8_t idx = (logHead + LOG_LINES - n + i) % LOG_LINES;
+      const char *sp = strchr(logLines[idx], ' ');
+      conStore(C_SYS, sp ? sp + 1 : logLines[idx], logMs[idx], NULL, 0);
+    }
+  }
+  devUntil = millis() + DEV_LEASE_MS;
+}
+
+void devCheck() {
+  if (devOn && (int32_t)(millis() - devUntil) >= 0) devStop();
 }
 
 void blinkLed() {
@@ -618,6 +842,7 @@ void seenAdd(uint64_t k) { seenKeys[seenPos] = k; seenPos = (seenPos + 1) % SEEN
 uint64_t pktKey(uint32_t dev, uint32_t msg) { return ((uint64_t)dev << 32) | msg; }
 
 void deriveRoom(Room &r) {
+  uint32_t t0 = devOn ? millis() : 0;
   uint8_t h[32], buf[48], seed[32];
   size_t cl = strlen(r.code);
   size_t sl = snprintf((char *)seed, sizeof seed, "johnify-v1|%s", r.code);
@@ -630,6 +855,11 @@ void deriveRoom(Room &r) {
   memcpy(buf, h, 32); memcpy(buf + 32, "gid", 3);
   mbedtls_sha256(buf, 35, h, 0);
   memcpy(r.gid, h, 8);
+  if (devOn) {
+    char tg[7];
+    gidTag(r.gid, tg);
+    conf(C_CRYPTO, "derive key for chat %s took %lu ms (5000 rounds)", tg, (unsigned long)(millis() - t0));
+  }
 }
 
 void makeAad(const Pkt &p, uint8_t *a) {
@@ -679,7 +909,9 @@ int ensureRoom(const char *code, bool evict) {
     for (int k = 0; k < MAX_ROOMS; k++) {
       if (slot < 0 || (millis() - rooms[k].lastUse) > (millis() - rooms[slot].lastUse)) slot = k;
     }
-    logEvent("Chat list full, replacing %.5s...", rooms[slot].code);
+    char tg[7];
+    gidTag(rooms[slot].gid, tg);
+    logEvent("Chat list full, replacing chat %s", tg);
   }
   rooms[slot].used = true;
   strcpy(rooms[slot].code, code);
@@ -710,13 +942,24 @@ void processTx() {
   for (int i = 0; i < TXQ_SIZE; i++) {
     if (!txq[i].used || (int32_t)(millis() - txq[i].at) < 0) continue;
     esp_err_t e = esp_now_send(BCAST, (const uint8_t *)&txq[i].p, txq[i].len);
-    if (e == ESP_OK) { txq[i].used = false; statTx++; txFailStreak = 0; blinkLed(); }
+    if (e == ESP_OK) {
+      txq[i].used = false; statTx++; txFailStreak = 0; blinkLed();
+      if (devOn) {
+        char tg[7];
+        gidTag(txq[i].p.gid, tg);
+        confPkt(C_TX, (const uint8_t *)&txq[i].p, txq[i].len, "TX chat %s msg %08x dev %08x hops %u len %u",
+                tg, (unsigned)txq[i].p.msgId, (unsigned)txq[i].p.devId, (unsigned)txq[i].p.hops, (unsigned)txq[i].p.len);
+      }
+    }
     else if (++txq[i].tries >= 5) {
       txq[i].used = false; statTxFail++;
       if (txFailStreak < 255) txFailStreak++;
       logEvent("Radio send failed (error %d)", (int)e);
     }
-    else txq[i].at = millis() + 10;
+    else {
+      txq[i].at = millis() + 10;
+      conf(C_TX, "TX busy (error %d), retry %u of 5", (int)e, (unsigned)txq[i].tries);
+    }
   }
 }
 
@@ -752,38 +995,61 @@ bool startNow() {
 }
 
 void handlePacket(const Pkt &p, int len) {
-  if (p.magic[0] != 'J' || p.magic[1] != 'F') { statBad++; return; }
-  if (p.len > MAX_TEXT || len != PKT_HDR + 12 + p.len + 16) { statBad++; return; }
+  const uint8_t *raw = (const uint8_t *)&p;
+  if (p.magic[0] != 'J' || p.magic[1] != 'F') {
+    statBad++;
+    if (devOn) confPkt(C_RX, raw, len, "RX rejected: not a Johnify packet (%d bytes)", len);
+    return;
+  }
+  if (p.len > MAX_TEXT || len != PKT_HDR + 12 + p.len + 16) {
+    statBad++;
+    if (devOn) confPkt(C_RX, raw, len, "RX rejected: wrong length (%d bytes, text field %u)", len, (unsigned)p.len);
+    return;
+  }
 
   uint64_t key = pktKey(p.devId, p.msgId);
-  if (seenHas(key)) return;
+  char tag[7] = "";
+  if (devOn) gidTag(p.gid, tag);
+  if (seenHas(key)) {
+    if (devOn) confPkt(C_RX, raw, len, "RX duplicate ignored  chat %s msg %08x dev %08x hops %u", tag, (unsigned)p.msgId, (unsigned)p.devId, (unsigned)p.hops);
+    return;
+  }
   seenAdd(key);
   statRx++; blinkLed();
 
+  const char *result = "chat not known on this board";
   size_t plen = 12 + p.len;
   for (int i = 0; i < MAX_ROOMS; i++) {
     if (!rooms[i].used || memcmp(rooms[i].gid, p.gid, 8) != 0) continue;
     uint8_t aad[16]; makeAad(p, aad);
     uint8_t pt[12 + MAX_TEXT];
+    uint32_t t0 = devOn ? micros() : 0;
     mbedtls_gcm_context g; mbedtls_gcm_init(&g);
     int rc = mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, rooms[i].key, 256);
     if (!rc) rc = mbedtls_gcm_auth_decrypt(&g, plen, p.nonce, 12, aad, 16, p.body + plen, 16, p.body, pt);
     mbedtls_gcm_free(&g);
+    if (devOn) conf(C_CRYPTO, "open %s chat %s msg %08x %u B in %lu us", rc == 0 ? "OK" : "FAILED", tag, (unsigned)p.msgId, (unsigned)plen, (unsigned long)(micros() - t0));
     if (rc == 0) {
       char name[13]; memcpy(name, pt, 12); name[12] = 0;
       char text[MAX_TEXT + 1]; memcpy(text, pt + 12, p.len); text[p.len] = 0;
       storeMsg(rooms[i].code, name, text, p.devId, p.msgId);
+      result = "decrypted and stored";
+      if (devOn) conf(C_CHAT, "message stored for chat %s (%u bytes of text)", tag, (unsigned)p.len);
     } else {
       statAuth++;
+      result = "security check FAILED, dropped";
       if (statAuth % 50 == 1) logEvent("Packet failed its security check (%lu)", (unsigned long)statAuth);
     }
     break;
   }
 
+  bool relayed = false;
   if (repeaterOn && p.hops < MAX_HOPS) {
     Pkt c; memcpy(&c, &p, len); c.hops++;
-    if (enqueueTx(c, len, 10 + (esp_random() % 50))) statRelay++;
+    relayed = enqueueTx(c, len, 10 + (esp_random() % 50));
+    if (relayed) statRelay++;
   }
+  if (devOn) confPkt(C_RX, raw, len, "RX chat %s msg %08x dev %08x hops %u len %u: %s%s", tag, (unsigned)p.msgId, (unsigned)p.devId, (unsigned)p.hops, (unsigned)p.len, result, relayed ? ", relay queued" : "");
 }
 
 void processRx() {
@@ -814,11 +1080,13 @@ void healthCheck() {
 }
 
 void sendJson(const char *body) {
+  lastStatus = 200; lastBytes = strlen(body);
   server.sendHeader("Cache-Control", "no-store");
   server.send(200, "application/json", body);
 }
 
 void fail(int code, const char *m) {
+  lastStatus = code; lastBytes = strlen(m);
   server.sendHeader("Cache-Control", "no-store");
   server.send(code, "text/plain", m);
 }
@@ -836,7 +1104,12 @@ void handleHello() {
 void handleJoin() {
   char room[ROOM_LEN + 1];
   if (!normRoom(server.arg("room"), room)) return fail(400, "bad room");
-  ensureRoom(room, true);
+  int ri = ensureRoom(room, true);
+  if (devOn) {
+    char tg[7];
+    gidTag(rooms[ri].gid, tg);
+    conf(C_CHAT, "phone joined chat %s", tg);
+  }
   sendJson("{\"ok\":true}");
 }
 
@@ -866,15 +1139,26 @@ void handleSend() {
 
   size_t plen = 12 + tl;
   uint8_t aad[16]; makeAad(p, aad);
+  uint32_t t0 = devOn ? micros() : 0;
   mbedtls_gcm_context g; mbedtls_gcm_init(&g);
   int rc = mbedtls_gcm_setkey(&g, MBEDTLS_CIPHER_ID_AES, rooms[ri].key, 256);
   if (!rc) rc = mbedtls_gcm_crypt_and_tag(&g, MBEDTLS_GCM_ENCRYPT, plen, p.nonce, 12, aad, 16, pt, p.body, 16, p.body + plen);
   mbedtls_gcm_free(&g);
   if (rc) { logEvent("Encryption failed (%d)", rc); return fail(500, "crypto"); }
+  if (devOn) {
+    char tg[7];
+    gidTag(p.gid, tg);
+    conf(C_CRYPTO, "seal chat %s msg %08x %u B text -> %u B packet in %lu us", tg, (unsigned)p.msgId, (unsigned)tl, (unsigned)(PKT_HDR + plen + 16), (unsigned long)(micros() - t0));
+  }
 
   uint8_t len = (uint8_t)(PKT_HDR + plen + 16);
   if (!enqueueTx(p, len, 0)) { logEvent("Send queue full"); return fail(503, "radio busy"); }
   enqueueTx(p, len, 30 + (esp_random() % 40));
+  if (devOn) {
+    char tg[7];
+    gidTag(p.gid, tg);
+    conf(C_CHAT, "message from a phone queued for the radio, sent twice: chat %s msg %08x (%u bytes of text)", tg, (unsigned)p.msgId, (unsigned)tl);
+  }
 
   seenAdd(pktKey(p.devId, p.msgId));
   char n[13], t[MAX_TEXT + 1];
@@ -976,9 +1260,12 @@ void handleLeave() {
   if (!normRoom(server.arg("room"), room)) return fail(400, "bad room");
   int i = findRoom(room);
   if (i >= 0) {
+    char tg[7];
+    gidTag(rooms[i].gid, tg);
     memset(&rooms[i], 0, sizeof rooms[i]);
     saveRooms();
-    logEvent("Left chat %.5s...", room);
+    logEvent("Left chat %s", tg);
+    conf(C_CHAT, "phone left chat %s, board forgot it", tg);
   }
   for (int k = 0; k < MAX_MSGS; k++) if (strcmp(msgs[k].room, room) == 0) msgs[k].room[0] = 0;
   sendJson("{\"ok\":true}");
@@ -987,6 +1274,7 @@ void handleLeave() {
 void handleReset() {
   if (server.method() != HTTP_POST) return fail(405, "post only");
   if (server.arg("confirm") != String("RESET")) return fail(400, "confirm");
+  devStop();
   memset(rooms, 0, sizeof rooms);
   memset(msgs, 0, sizeof msgs);
   memset(seenKeys, 0, sizeof seenKeys);
@@ -1005,7 +1293,203 @@ void handleReset() {
   sendJson("{\"ok\":true}");
 }
 
+void outHex(Out &o, const uint8_t *d, size_t n) {
+  static const char H[] = "0123456789abcdef";
+  if (o.n + n * 2 + 1 > o.cap) return;
+  for (size_t i = 0; i < n; i++) { o.b[o.n++] = H[d[i] >> 4]; o.b[o.n++] = H[d[i] & 15]; }
+  o.b[o.n] = 0;
+}
+
+const char *resetName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON: return "Power on";
+    case ESP_RST_SW: return "Software restart";
+    case ESP_RST_PANIC: return "Crash";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: return "Watchdog";
+    case ESP_RST_BROWNOUT: return "Brownout (low voltage)";
+    case ESP_RST_DEEPSLEEP: return "Deep sleep wake";
+    case ESP_RST_EXT: return "Reset button";
+    default: return "Other";
+  }
+}
+
+void sampler() {
+  uint32_t now = millis();
+  if (now - lastSample < 1000) return;
+  uint32_t win = (now - lastSample) * 1000UL;
+  uint32_t pct = (uint32_t)(((uint64_t)busyUs * 100ULL) / win);
+  cpuPct = pct > 100 ? 100 : (uint8_t)pct;
+  busyUs = 0; lastSample = now;
+
+  wifi_sta_list_t list;
+  memset(&list, 0, sizeof list);
+  if (esp_wifi_ap_get_sta_list(&list) != ESP_OK) return;
+  uint8_t cur[10][6]; int8_t rs[10]; int n = 0;
+  memset(cur, 0, sizeof cur); memset(rs, 0, sizeof rs);
+  for (int i = 0; i < list.num && n < 10; i++) { memcpy(cur[n], list.sta[i].mac, 6); rs[n] = list.sta[i].rssi; n++; }
+  for (int i = 0; i < n; i++) {
+    bool known = false;
+    for (int k = 0; k < staN; k++) if (memcmp(cur[i], staMac[k], 6) == 0) known = true;
+    if (!known) conf(C_WIFI, "device connected %02x:%02x:%02x:xx:xx:xx signal %d dBm", cur[i][0], cur[i][1], cur[i][2], (int)rs[i]);
+  }
+  for (int k = 0; k < staN; k++) {
+    bool still = false;
+    for (int i = 0; i < n; i++) if (memcmp(cur[i], staMac[k], 6) == 0) still = true;
+    if (!still) conf(C_WIFI, "device disconnected %02x:%02x:%02x:xx:xx:xx", staMac[k][0], staMac[k][1], staMac[k][2]);
+  }
+  memcpy(staMac, cur, sizeof cur); memcpy(staRssi, rs, sizeof rs); staN = n;
+}
+
+void noteClient() {
+  uint32_t k = (uint32_t)server.client().remoteIP();
+  int slot = -1, oldest = 0;
+  for (int i = 0; i < 8; i++) {
+    if (clients[i].ip == k) { slot = i; break; }
+    if (clients[i].last < clients[oldest].last) oldest = i;
+  }
+  if (slot < 0) { slot = oldest; clients[slot].ip = k; clients[slot].count = 0; }
+  clients[slot].last = millis() | 1;
+  clients[slot].count++;
+}
+
+bool showArg(const String &n) {
+  return n == "dev" || n == "since" || n == "boot" || n == "on" || n == "polls" || n == "clear" || n == "confirm";
+}
+
+void logRequest(uint32_t us) {
+  char args[72]; args[0] = 0; size_t n = 0;
+  for (int i = 0; i < server.args() && n < sizeof args - 26; i++) {
+    String name = server.argName(i), val = server.arg(i);
+    int w = showArg(name)
+      ? snprintf(args + n, sizeof args - n, "%s%s=%.12s", n ? "&" : "", name.c_str(), val.c_str())
+      : snprintf(args + n, sizeof args - n, "%s%s=<%uB>", n ? "&" : "", name.c_str(), (unsigned)val.length());
+    if (w < 0) break;
+    n += (size_t)w;
+    if (n >= sizeof args) { n = sizeof args - 1; break; }
+  }
+  IPAddress ip = server.client().remoteIP();
+  conf(C_HTTP, "%u.%u.%u.%u %s %s%s%s -> %d %uB %lu.%lu ms", ip[0], ip[1], ip[2], ip[3],
+       server.method() == HTTP_POST ? "POST" : "GET", server.uri().c_str(), n ? "?" : "", args,
+       lastStatus, (unsigned)lastBytes, (unsigned long)(us / 1000), (unsigned long)((us % 1000) / 100));
+}
+
+void routed(void (*fn)(), uint8_t mode) {
+  Guard g;
+  if (!devOn) { fn(); return; }
+  if (mode != 2) noteClient();
+  lastStatus = 0; lastBytes = 0;
+  uint32_t t0 = micros();
+  fn();
+  uint32_t dt = micros() - t0;
+  busyUs += dt;
+  if (mode == 0 || (mode == 1 && devPolls)) logRequest(dt);
+}
+
+void routedFree(void (*fn)()) {
+  if (!devOn) { fn(); return; }
+  noteClient();
+  lastStatus = 0; lastBytes = 0;
+  uint32_t t0 = micros();
+  fn();
+  logRequest(micros() - t0);
+}
+
+void handleDev() {
+  if (server.method() != HTTP_POST) return fail(405, "post only");
+  if (server.hasArg("on")) {
+    if (server.arg("on") == "1") devStart(); else devStop();
+  }
+  if (devOn) {
+    devUntil = millis() + DEV_LEASE_MS;
+    if (server.hasArg("polls")) devPolls = server.arg("polls") == "1";
+    if (server.arg("clear") == "1") clearConsole();
+  }
+  sendJson(devOn ? (devPolls ? "{\"on\":true,\"polls\":true}" : "{\"on\":true,\"polls\":false}") : "{\"on\":false,\"polls\":false}");
+}
+
+void handleConsole() {
+  char bootHex[9]; snprintf(bootHex, sizeof bootHex, "%08x", (unsigned)bootId);
+  uint32_t since = (uint32_t)server.arg("since").toInt();
+  if (server.arg("boot") != String(bootHex)) since = 0;
+  conBuf[0] = 0;
+  Out o = { conBuf, sizeof conBuf, 0 };
+  if (!devOn) {
+    outF(o, "{\"on\":false,\"polls\":false,\"boot\":\"%s\",\"lost\":0,\"lines\":[],\"next\":%lu,\"more\":false}", bootHex, (unsigned long)since);
+    sendJson(o.b);
+    return;
+  }
+  devUntil = millis() + DEV_LEASE_MS;
+  portENTER_CRITICAL(&conMux);
+  uint32_t newest = conSeq - 1;
+  portEXIT_CRITICAL(&conMux);
+  uint32_t oldest = newest > CON_LINES ? newest - CON_LINES + 1 : 1;
+  if (since > newest) since = 0;
+  uint32_t first = since + 1, lost = 0;
+  if (first < oldest) { lost = oldest - first; first = oldest; }
+  uint32_t last = first - 1;
+  int count = 0;
+  outF(o, "{\"on\":true,\"polls\":%s,\"boot\":\"%s\",\"lost\":%lu,\"lines\":[", devPolls ? "true" : "false", bootHex, (unsigned long)lost);
+  for (uint32_t seq = first; seq <= newest; seq++) {
+    if (count >= 40 || o.cap - o.n < 1100) break;
+    ConLine l; PktRec pr; bool hasPk = false, ok = false;
+    portENTER_CRITICAL(&conMux);
+    ConLine &src = conLines[(seq - 1) % CON_LINES];
+    if (src.seq == seq) {
+      l = src; ok = true;
+      if (l.pk >= 0 && pktRecs[l.pk].seq == seq) { pr = pktRecs[l.pk]; hasPk = true; }
+    }
+    portEXIT_CRITICAL(&conMux);
+    last = seq;
+    if (!ok) continue;
+    if (count) outPut(o, ",");
+    outF(o, "{\"s\":%lu,\"t\":%lu,\"c\":\"%s\",\"x\":", (unsigned long)seq, (unsigned long)l.ms, CAT_NAMES[l.cat]);
+    outJson(o, l.text);
+    if (hasPk) { outPut(o, ",\"h\":\""); outHex(o, pr.data, pr.len); outPut(o, "\""); }
+    outPut(o, "}");
+    count++;
+  }
+  outF(o, "],\"next\":%lu,\"more\":%s}", (unsigned long)last, last < newest ? "true" : "false");
+  sendJson(o.b);
+}
+
+void handlePerf() {
+  if (!devOn) { sendJson("{\"on\":false}"); return; }
+  devUntil = millis() + DEV_LEASE_MS;
+  pollBuf[0] = 0;
+  Out o = { pollBuf, sizeof pollBuf, 0 };
+  const char *chip = ESP.getChipModel();
+  float t = temperatureRead();
+  outPut(o, "{\"on\":true,\"temp\":");
+  if (strcmp(chip, "ESP32") != 0 && t > -40.0f && t < 125.0f) outF(o, "%.1f", (double)t); else outPut(o, "null");
+  outF(o, ",\"cpu\":%u,\"mhz\":%u,\"cores\":%u,\"chip\":\"%s\",\"heapTotal\":%lu,\"heapFree\":%lu,\"heapMax\":%lu",
+       (unsigned)cpuPct, (unsigned)ESP.getCpuFreqMHz(), (unsigned)ESP.getChipCores(), chip,
+       (unsigned long)ESP.getHeapSize(), (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
+  if (ESP.getPsramSize()) outF(o, ",\"psramTotal\":%lu,\"psramFree\":%lu", (unsigned long)ESP.getPsramSize(), (unsigned long)ESP.getFreePsram());
+  else outPut(o, ",\"psramTotal\":null,\"psramFree\":null");
+  outF(o, ",\"flash\":%lu,\"sketch\":%lu,\"sketchFree\":%lu,\"up\":%lu,\"reset\":\"%s\",\"sta\":[",
+       (unsigned long)ESP.getFlashChipSize(), (unsigned long)ESP.getSketchSize(), (unsigned long)ESP.getFreeSketchSpace(),
+       (unsigned long)(millis() / 1000), resetName());
+  for (int i = 0; i < staN; i++) {
+    if (i) outPut(o, ",");
+    outF(o, "{\"mac\":\"%02x:%02x:%02x:xx:xx:xx\",\"rssi\":%d}", staMac[i][0], staMac[i][1], staMac[i][2], (int)staRssi[i]);
+  }
+  outPut(o, "],\"clients\":[");
+  int c = 0;
+  for (int i = 0; i < 8; i++) {
+    if (!clients[i].ip) continue;
+    uint32_t k = clients[i].ip;
+    if (c++) outPut(o, ",");
+    outF(o, "{\"ip\":\"%u.%u.%u.%u\",\"age\":%lu,\"n\":%lu}", (unsigned)(k & 255), (unsigned)((k >> 8) & 255), (unsigned)((k >> 16) & 255),
+         (unsigned)(k >> 24), (unsigned long)((millis() - clients[i].last) / 1000), (unsigned long)clients[i].count);
+  }
+  outPut(o, "]}");
+  sendJson(o.b);
+}
+
 void handleRoot() {
+  lastStatus = 200; lastBytes = strlen_P(INDEX_HTML);
   server.sendHeader("Cache-Control", "no-cache");
   server.send_P(200, "text/html", INDEX_HTML);
 }
@@ -1022,6 +1506,7 @@ void handleNotFound() {
   IPAddress ip = WiFi.softAPIP();
   char loc[40];
   snprintf(loc, sizeof loc, "http://%u.%u.%u.%u/", ip[0], ip[1], ip[2], ip[3]);
+  lastStatus = 302; lastBytes = 0;
   server.sendHeader("Location", loc, true);
   server.send(302, "text/plain", "");
 }
@@ -1061,24 +1546,27 @@ void setup() {
   }
 
   dns.start(53, "*", WiFi.softAPIP());
-  server.on("/", handleRoot);
-  server.on("/api/hello", []() { Guard g; handleHello(); });
-  server.on("/api/join", []() { Guard g; handleJoin(); });
-  server.on("/api/send", []() { Guard g; handleSend(); });
-  server.on("/api/poll", []() { Guard g; handlePoll(); });
-  server.on("/api/status", []() { Guard g; handleStatus(); });
-  server.on("/api/log", []() { Guard g; handleLog(); });
-  server.on("/api/repeater", []() { Guard g; handleRepeater(); });
-  server.on("/api/leave", []() { Guard g; handleLeave(); });
-  server.on("/api/reset", []() { Guard g; handleReset(); });
-  server.on("/favicon.ico", []() { server.send(204); });
-  server.onNotFound(handleNotFound);
+  server.on("/", []() { routedFree(handleRoot); });
+  server.on("/api/hello", []() { routed(handleHello, 0); });
+  server.on("/api/join", []() { routed(handleJoin, 0); });
+  server.on("/api/send", []() { routed(handleSend, 0); });
+  server.on("/api/poll", []() { routed(handlePoll, 1); });
+  server.on("/api/status", []() { routed(handleStatus, 1); });
+  server.on("/api/log", []() { routed(handleLog, 1); });
+  server.on("/api/repeater", []() { routed(handleRepeater, 0); });
+  server.on("/api/leave", []() { routed(handleLeave, 0); });
+  server.on("/api/reset", []() { routed(handleReset, 0); });
+  server.on("/api/dev", []() { routed(handleDev, 0); });
+  server.on("/api/console", []() { routed(handleConsole, 2); });
+  server.on("/api/perf", []() { routed(handlePerf, 1); });
+  server.on("/favicon.ico", []() { routedFree([]() { lastStatus = 204; lastBytes = 0; server.send(204); }); });
+  server.onNotFound([]() { routedFree(handleNotFound); });
   server.begin();
 
   int saved = 0;
   for (int i = 0; i < MAX_ROOMS; i++) if (rooms[i].used) saved++;
   logEvent("Ready: %s, repeater %s, %d chats saved", apSsid, repeaterOn ? "on" : "off", saved);
-  Serial.printf("[johnify] Open http://%s\n", WiFi.softAPIP().toString().c_str());
+  logEvent("Open http://%s", WiFi.softAPIP().toString().c_str());
   if (xTaskCreate(webTask, "johnify-web", 10240, NULL, 1, NULL) != pdPASS) {
     logEvent("Web server task failed to start, rebooting");
     delay(2000); ESP.restart();
@@ -1088,9 +1576,12 @@ void setup() {
 void loop() {
   {
     Guard g;
+    uint32_t t0 = devOn ? micros() : 0;
     processRx();
     processTx();
     healthCheck();
+    if (devOn) { sampler(); busyUs += micros() - t0; }
+    devCheck();
     if (restartPending && (int32_t)(millis() - restartAt) >= 0) ESP.restart();
 #ifdef LED_BUILTIN
     if (ledOffAt && (int32_t)(millis() - ledOffAt) >= 0) { digitalWrite(LED_BUILTIN, HIGH); ledOffAt = 0; }
