@@ -31,6 +31,8 @@ header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;paddi
 @media(max-width:380px){.word{font-size:28px}.btn{padding:9px 9px;font-size:12px}.icon{width:34px;height:34px}}
 #warn{flex:none;padding:8px 14px;background:var(--acc);color:var(--acctx);font:700 13px/1.35 var(--sans)}
 #warn[hidden]{display:none}
+#near{flex:none;padding:4px 14px;border-bottom:1px solid var(--rule);color:var(--mute);font:600 12px/1.3 var(--sans)}
+#near[hidden]{display:none}
 #view{flex:1;min-height:0;display:flex;flex-direction:column}
 .scr{flex:1;min-height:0;display:flex;flex-direction:column}
 .list{flex:1;overflow-y:auto;display:flex;flex-direction:column;padding:16px 14px 24px}
@@ -140,6 +142,7 @@ textarea{display:block;width:100%;min-height:44px;max-height:120px;resize:none;b
  <button id="bSet" class="icon" aria-label="Settings"></button>
 </header>
 <div id="warn" hidden role="alert"></div>
+<div id="near" hidden title="Other Johnify boards this board has heard in the last couple of minutes. It counts boards, not people or chats."></div>
 <main id="view"></main>
 <div id="modal" hidden><div class="box" role="dialog" aria-modal="true" aria-labelledby="mt">
  <h3 id="mt">Join a chat</h3>
@@ -199,9 +202,14 @@ function ask(title,text,okLabel){
     const done=v=>{m.hidden=true;y.onclick=n.onclick=m.onclick=null;res(v)};
     y.onclick=()=>done(true);n.onclick=()=>done(false);m.onclick=e=>{if(e.target===m)done(false)};
     n.focus()})}
+function setNear(n){
+  const e=$('#near');
+  if(!Number.isInteger(n)||!$('#warn').hidden){e.hidden=true;return}
+  e.textContent=n<0?'Looking for other boards\u2026':n===0?'No other boards in range':n===1?'1 board in range':n+' boards in range';e.hidden=false}
 function setLink(ok){
   $('#dot').className='dot '+(ok?'on':'off');$('#dot').title=ok?'Connected to the board':'Not connected';
   if(ok){fails=0;$('#warn').hidden=true;return}
+  $('#near').hidden=true;
   if(++fails>=2){const w=$('#warn');w.textContent='No connection to the board. Join the Wi-Fi network '+(S.ssid||'Johnify-XXXX')+' and keep this page open.';w.hidden=false}}
 
 async function api(p,o,post){
@@ -252,7 +260,7 @@ async function poll(){
     if(!S.dev)await hello();
     const j=await api('/api/poll',{since:S.since,boot:S.boot,r:S.rooms.join(',')});
     if(typeof j.boot!=='string'||!Number.isInteger(j.next))throw Object.assign(new Error('offline'),{net:true});
-    S.boot=j.boot;S.since=j.next;ingest(j.msgs);save();setLink(true)}
+    S.boot=j.boot;S.since=j.next;ingest(j.msgs);save();setLink(true);setNear(j.near)}
   catch(e){setLink(false)}
   busy=false;
   if(again){again=false;poll()}}
