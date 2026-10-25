@@ -4,14 +4,15 @@ An encrypted group chat that runs on ESP32 boards with no internet, router, or c
 
 Each board runs its own Wi-Fi hotspot and serves a small chat web app. Phones connect to the nearest board with a browser. Boards pass messages to each other over ESP-NOW, a connectionless 2.4 GHz protocol built into the ESP32. Messages are encrypted with AES-256-GCM using a key derived from a shared chat code. Any board can also be switched into repeater mode to extend range.
 
-There are two implementations of the same firmware. The Arduino version is a single source file. The MicroPython version is three small files in one folder:
+There are three versions in this repository:
 
-| Version | File | Language | Boards |
-|---------|------|----------|--------|
-| Arduino | `arduino/Johnify/Johnify.ino` | C++ | Written for the Seeed Studio **XIAO ESP32S3**. Other ESP32-family boards supported by the Arduino ESP32 core should work. |
-| MicroPython | `MicroPython/` (`main.py`, `johnify.html`, `encryption.py`) | Python | Any ESP32-family board (ESP32, S2, S3, C3, C6) running MicroPython 1.21 or newer. See [MicroPython version](#micropython-version). |
+| Version | Folder | Language | Boards |
+|---------|--------|----------|--------|
+| **Arduino** (1.4.0) | `arduino/Johnify/` | C++ | Written for the Seeed Studio **XIAO ESP32S3**. Other ESP32-family boards supported by the Arduino ESP32 core should work. |
+| **MicroPython** (1.4.0) | `MicroPython/` | Python | Any ESP32-family board (ESP32, S2, S3, C3, C6) running MicroPython 1.21 or newer. Three files: `main.py`, `johnify.html`, `encryption.py`. See [MicroPython version](#micropython-version). |
+| **Johnify Lite** (1.3.0, frozen) | `Johnify-Lite-MicroPython/` | Python | The MicroPython version as it was before 1.4.0, kept as a smaller build. It will not be updated. See [Johnify Lite](#johnify-lite-micropython). |
 
-Both serve the same web app, speak the same packet format, and use the same encryption, so boards running either version can share chats and relay for each other in the same network. A test that builds packets with the actual Arduino code and the MicroPython code and exchanges them in both directions is described under [Verification](#verification).
+All three serve the same web app, speak the same packet format, and use the same encryption, so boards running any of them can share chats and relay for each other in the same network. A test that builds packets with the actual Arduino code and the MicroPython code and exchanges them in both directions is described under [Verification](#verification).
 
 ---
 
@@ -20,7 +21,9 @@ Both serve the same web app, speak the same packet format, and use the same encr
 - [Features](#features)
 - [Quick start](#quick-start)
 - [MicroPython version](#micropython-version)
+- [Johnify Lite](#johnify-lite-micropython)
 - [Using Johnify](#using-johnify)
+- [Developer mode](#developer-mode)
 - [Architecture](#architecture)
 - [Packet format](#packet-format)
 - [Cryptography](#cryptography)
@@ -31,6 +34,7 @@ Both serve the same web app, speak the same packet format, and use the same encr
 - [Configuration](#configuration)
 - [Memory and limits](#memory-and-limits)
 - [Troubleshooting](#troubleshooting)
+- [Changelog](#changelog)
 
 ---
 
@@ -44,6 +48,7 @@ Both serve the same web app, speak the same packet format, and use the same encr
 - Chat history is kept in the phone's browser storage. Chat codes are kept in the board's flash. Recent messages are kept in the board's RAM.
 - Captive-portal behaviour: phones prompt "sign in to network" and any URL typed while connected opens the app.
 - A mixed network works. Arduino boards and MicroPython boards can chat and relay for each other.
+- Developer mode, one button in Settings: a live console (requests, packets, encryption, Wi-Fi), chip temperature, CPU and memory use, storage, and connected devices. It runs only while it is open, and it never shows chat codes, keys or message text.
 - The web app is served entirely by the board and makes no outside requests, so it works with no internet. It uses each phone's built-in fonts.
 
 ## Quick start
@@ -221,7 +226,7 @@ The board is then blank. To use it again, flash MicroPython (Install, step 3) or
 ### What is the same
 
 - Wi-Fi hotspot `Johnify-XXXX` (the name uses the same bytes of the MAC as the Arduino build), captive-portal DNS, channel 1, up to 8 phones.
-- The web app, including Settings, repeater mode, diagnostics, the bug report button, leaving a chat, and resetting the board.
+- The web app, including Settings, repeater mode, diagnostics, the bug report button, leaving a chat, resetting the board, and Developer mode.
 - The HTTP API and its error codes (`bad room`, `bad dev`, `empty`, `crypto`, `radio busy`).
 - The packet layout, the key derivation (5,000 rounds of SHA-256), and AES-256-GCM with the same additional authenticated data, so packets from either version decrypt on the other.
 - Duplicate suppression, the 4-hop repeater limit with random relay delay, sending each message twice, 24 chats per board, 12 per phone, 200 messages in memory, 190 bytes of text.
@@ -245,9 +250,24 @@ The board is then blank. To use it again, flash MicroPython (Install, step 3) or
 | **Radio tuning** | Transmit power and Wi-Fi power-save are set when the firmware build allows it and skipped silently when it does not. |
 | **LED** | Off unless `LED_PIN` is set. |
 | **Clock** | Uptime and message ages use the board's seconds counter. |
-| **Version string** | Settings shows `1.3.0-mp`, and the SDK line shows the MicroPython version instead of the ESP-IDF version. |
+| **Developer mode numbers** | Temperature comes from `esp32.mcu_temperature()`, which exists on the S2, S3, C3 and C6 builds. Cores and the largest free block are not available. PSRAM is part of the heap total. Storage shows the file system and flash chip size. CPU use is measured the same way as on Arduino. |
+| **Version string** | Settings shows `1.4.0-mp`, and the SDK line shows the MicroPython version instead of the ESP-IDF version. |
 
 Nothing in the Arduino feature set is missing from the port.
+
+---
+
+## Johnify Lite (MicroPython)
+
+Johnify Lite is a frozen copy of **Johnify 1.3.0** for MicroPython, kept in the `Johnify-Lite-MicroPython/` folder. It has the same three files as the MicroPython version (`main.py`, `johnify.html`, `encryption.py`).
+
+**Lite will not receive any more updates.** Johnify 1.4.0 added [Developer mode](#developer-mode), and the main MicroPython version keeps moving forward from there. Lite stays at 1.3.0 as the smaller build: no new features, and no bug fixes. There is no Lite version for Arduino.
+
+- **Same radio protocol.** The packet format and encryption did not change between 1.3.0 and 1.4.0, so Lite boards and 1.4.0 boards (Arduino or MicroPython) chat and relay for each other.
+- **What Lite does not have.** Developer mode, and the log fix described below. Everything else from 1.3.0 is there: leaving a chat, resetting the board, the repeater, diagnostics, and the bug report button. Settings shows `1.3.0-mp`.
+- **Known issue in Lite, which will not be fixed there.** Two event log lines print the first five characters of a chat code: "Chat list full, replacing ..." and "Left chat ...". Those lines appear in the board's event log and in the text made by **Copy bug report**. Look at a Lite bug report before you post it publicly. Johnify 1.4.0 fixes this.
+- **Install it exactly like the MicroPython version** (see [Install](#install) in that section), using the files in `Johnify-Lite-MicroPython/` instead. The file names are the same in both folders, so copying one set onto a board overwrites the other. A board runs one or the other. Saved chats carry over, because both use the same storage format.
+- **Removing it** is the same as removing the MicroPython version (see [Removing Johnify from a board](#removing-johnify-from-a-board)).
 
 ---
 
@@ -258,13 +278,67 @@ Nothing in the Arduino feature set is missing from the port.
 3. Press **Create chat**. You get a 10-character code.
 4. Give the code to the other person. They connect to their own board, press **Join**, and enter it.
 5. Messages sent by either person appear on the other's phone.
-6. The **Settings** page (the sliders icon in the top-right corner) has your display name, the repeater switch that makes that board relay traffic, live counters, and the reset button.
+6. The **Settings** page (the sliders icon in the top-right corner) has your display name, the repeater switch that makes that board relay traffic, live counters, the reset button, and a small **Developer** button (see [Developer mode](#developer-mode)).
 
 **Leaving a chat.** Open the chat and press **Leave**, then confirm in the dialog. The chat and its saved messages are deleted from your phone, and the board forgets the chat too: it stops keeping messages for it and removes it from its saved list. You can join again later with the code. If another phone on the same board is still in that chat, that phone re-adds it automatically within a couple of seconds.
 
 **Resetting the board.** In Settings, press **Reset board** and confirm. The board erases every chat, message, counter, log line and setting it holds, turns repeater mode off, clears its saved data in flash, and restarts, so it behaves like freshly uploaded firmware. Your phone's saved chats, name and device ID are cleared too, because otherwise the phone would put the chats straight back. Other phones keep their own copies and re-add their chats when they next connect. The Wi-Fi network disappears for a few seconds while the board restarts. The firmware itself is not touched.
 
 If the page does not load, turn off mobile data on the phone. Some phones route browser traffic over cellular when the Wi-Fi network has no internet.
+
+## Developer mode
+
+Developer mode is a set of tools for seeing what a board is doing: a live console, performance numbers, and the devices connected to it. It is off until you ask for it, and it switches itself off when you stop looking.
+
+**Turning it on.** Open **Settings** and press the small **Developer** button at the top right. The developer sections are added to the Settings page. Press the button again, or leave Settings by any route, and the sections disappear and everything stops. Next time you open Settings the button has to be pressed again.
+
+**Nothing runs until you press it.** Until then the page makes no developer requests, and the board records nothing: no console lines, no device list, no timing. All it does for the feature is check one flag.
+
+**It stops by itself.** While Developer mode is on, the page keeps the board informed. If the board hears nothing for 8 seconds (you closed the page, locked the phone, or lost the Wi-Fi), it stops capturing, discards everything it recorded, and frees the memory.
+
+### What you get
+
+| Section | What it shows |
+|---------|---------------|
+| **Chip temperature** | The chip's own temperature sensor. Available on the ESP32-S2, S3, C3 and C6. The original ESP32 has no usable sensor, so it shows `n/a`. |
+| **Johnify CPU use** | The share of the last second the chip spent on Johnify's own work: handling requests, processing radio packets, and encryption. It does not include Wi-Fi and system tasks, so it is not the whole chip's load. |
+| **Memory** | Percent used, bytes free, and total. Arduino also shows the largest free block and PSRAM. On MicroPython any PSRAM is already part of the total. |
+| **Storage** | Flash chip size. Arduino also shows program size and the space left for updates. MicroPython shows files used and free on its file system. |
+| **Chip** | Model, clock speed, why the board last restarted, uptime. Arduino also shows the number of cores. |
+| **Connected devices** | How many devices are on the Wi-Fi with their signal strength, and the phones that have made requests, by IP address, with request counts. |
+| **Live console** | A scrolling log of what the board is doing, described below. |
+
+### The live console
+
+Each line has the board's uptime in seconds, a category, and text.
+
+| Category | What it records |
+|----------|-----------------|
+| `SYS` | The same lines the board prints to its serial port, including start-up. When Developer mode starts, the recent ones are replayed so you see what you would see on a laptop. |
+| `HTTP` | Every request: the phone's IP, method, path, the request's parameters, the reply code and size, and how long it took. |
+| `RX` | Every packet heard over the radio: the chat's ID, message ID, device ID, hop count, length, and what the board did with it (decrypted and stored, chat not known here, duplicate, rejected, failed its security check, relay queued). |
+| `TX` | Every packet the board sends, and radio send problems. |
+| `CRYPTO` | Encrypting, decrypting, and deriving keys, with how long each took and whether decryption passed its check. |
+| `CHAT` | Phones joining and leaving chats, and messages being stored or queued for sending. |
+| `WIFI` | Devices connecting to and leaving the hotspot, with signal strength. |
+
+- **Packets have a `hex` button** that shows the whole packet as it went over the air. That is the header, the encrypted body, and the check value. All of it is already public to anyone with a radio, and none of it is readable without the chat code. Only the 12 newest packets keep their hex.
+- **Polling requests are hidden by default.** Each phone asks for new messages every 1.5 seconds, which would bury everything else. The **Include polling requests** switch adds them.
+- **Pause, Clear and Copy** buttons, and a filter chip for each category. Pause stops the page asking the board for new lines.
+- **The board keeps the newest lines only:** 80 on Arduino (`CON_LINES`) and 60 on MicroPython (`CONSOLE_LINES`). If lines were pushed out before you saw them, the console says how many.
+
+### What it never shows
+
+The console is built so that someone watching it cannot learn a secret from it.
+
+- **No chat codes**, not even part of one. A chat is identified by a 6-character ID taken from its group ID, which is already visible on the air.
+- **No encryption keys.**
+- **No message text, and no display names.** Requests show only their length, such as `text=<16B>`.
+- **No Wi-Fi password.**
+- Request parameters are shown by value only for a short fixed list (device ID, message positions, and on/off switches). Everything else shows as a size.
+- Device MAC addresses show only their first three bytes (`aa:bb:cc:xx:xx:xx`).
+
+It does show network details: phone IP addresses, request paths, signal strengths, and packet metadata. **Anyone who can join the hotspot can open Developer mode**, so on a hotspot you do not control, set `AP_PASSWORD`.
 
 ## Architecture
 
@@ -455,13 +529,13 @@ If the `boot` sent by the client does not match the board's, `since` is treated 
 The board's last 16 events (start-up, radio failures, full queues, restarts), oldest first. Also printed to the serial port with a `[johnify]` prefix.
 
 ```json
-{ "log": ["0s Johnify 1.3.0 starting", "2s Ready: Johnify-9F3A, repeater off, 1 chats saved"] }
+{ "log": ["0s Johnify 1.4.0 starting", "2s Ready: Johnify-9F3A, repeater off, 1 chats saved"] }
 ```
 
 ### `GET /api/status`
 
 ```json
-{ "ver": "1.3.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
+{ "ver": "1.4.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
   "ssid": "Johnify-9F3A", "ch": 1, "hops": 4, "clients": 2, "rooms": 3,
   "rx": 118, "tx": 64, "relayed": 0,
   "rxDrop": 0, "txFail": 0, "bad": 3, "auth": 0, "reinit": 0,
@@ -488,6 +562,39 @@ Erases all chats, messages, duplicate memory, counters, log lines and flash-save
 { "ok": true }
 ```
 
+### `POST /api/dev` (form: `on`, `polls`, `clear`)
+
+Controls Developer mode. `on=1` starts it (and replays the recent event log into the console), `on=0` stops it and discards everything recorded. While it is on, `polls=1` or `polls=0` includes or hides polling requests, and `clear=1` empties the console. Developer mode runs on an 8-second lease. Every call to this endpoint, `/api/console` or `/api/perf` renews it, and if nothing renews it the board stops by itself. `POST` only.
+
+```json
+{ "on": true, "polls": false }
+```
+
+### `GET /api/console?since=<n>&boot=<hex>`
+
+New console lines after sequence number `since`. Pass the `boot` value from the previous reply; if it does not match, the board starts over from the first line it has. When Developer mode is off it replies with `"on": false` and no lines.
+
+```json
+{ "on": true, "polls": false, "boot": "07c4e19b", "lost": 0, "more": false, "next": 42,
+  "lines": [ { "s": 41, "t": 5321, "c": "RX", "x": "RX chat 1a2b3c msg 5e8c01aa dev a1b2c3d4 hops 0 len 12: decrypted and stored", "h": "4a46..." } ] }
+```
+
+`s` is the line number, `t` the board's uptime in milliseconds, `c` the category, `x` the text, and `h` the packet's hex when the line has one. `lost` counts older lines pushed out before they were read. `more` is `true` when the reply was cut short and the client should ask again straight away. This endpoint's own requests are never logged.
+
+### `GET /api/perf`
+
+Performance numbers, only while Developer mode is on (otherwise `{"on":false}`). The Arduino and MicroPython versions share these fields; ones a platform cannot supply are `null` or left out.
+
+```json
+{ "on": true, "temp": 41.5, "cpu": 12, "mhz": 240, "cores": 2, "chip": "ESP32-S3",
+  "heapTotal": 300000, "heapFree": 210000, "heapMax": 120000, "psramTotal": null, "psramFree": null,
+  "flash": 8388608, "sketch": 900000, "sketchFree": 1200000, "up": 5321, "reset": "Power on",
+  "sta": [ { "mac": "aa:bb:cc:xx:xx:xx", "rssi": -48 } ],
+  "clients": [ { "ip": "192.168.4.2", "age": 1, "n": 5 } ] }
+```
+
+MicroPython reports `fsTotal` and `fsFree` instead of `sketch` and `sketchFree`.
+
 ### Other paths
 
 `/` serves the app (`Cache-Control: no-cache`, so a firmware update shows up immediately). `/favicon.ico` returns 204. Every other path replies `302` to `http://192.168.4.1/`, which together with a DNS server that answers every query with the board's address makes the captive-portal behaviour work.
@@ -503,6 +610,7 @@ The app is a single HTML page stored inside the firmware: the `INDEX_HTML` const
 - **Layout.** A ruled, editorial list with large serif numerals for chats, a green header band inside a chat, and an asymmetric bento grid on the Settings page.
 - **Motion.** One staggered reveal when the page first loads, switched off for users who ask for reduced motion. No other animation.
 - **Navigation.** The phone's back button moves between the chat list, a chat, and Settings.
+- **Developer mode.** Built into the Settings page and added only when its button is pressed. It is removed, and its timers stopped, whenever the page is redrawn or left.
 
 ### Error handling in the page
 
@@ -537,7 +645,7 @@ Because phones are plain HTTP pages, `crypto.subtle` is not available. That is w
 
 ## Configuration
 
-Settings are `#define`s at the top of `Johnify.ino`, or variables of the same names at the top of `main.py`. These exist only in the MicroPython version: `MAX_WEB_CLIENTS`, `LED_PIN`, `LED_ACTIVE_LOW`, `USE_WATCHDOG`, and `PAGE_FILE`. `RXQ_SIZE` exists only in the Arduino version.
+Settings are `#define`s at the top of `Johnify.ino`, or variables of the same names at the top of `main.py`. These exist only in the MicroPython version: `MAX_WEB_CLIENTS`, `CONSOLE_LINES`, `LED_PIN`, `LED_ACTIVE_LOW`, `USE_WATCHDOG`, and `PAGE_FILE`. `RXQ_SIZE` and `CON_LINES` exist only in the Arduino version.
 
 | Name | Default | Description |
 |------|--------:|-------------|
@@ -551,6 +659,8 @@ Settings are `#define`s at the top of `Johnify.ino`, or variables of the same na
 | `ROOM_LEN` | `10` | Chat code length. The web app also assumes 10, so change both. |
 | `SEEN_SIZE` | `256` | Duplicate-suppression memory. |
 | `TXQ_SIZE`, `RXQ_SIZE` | `16` | Transmit and receive queue depth. |
+| `CON_LINES` | `80` | Arduino only. Developer console lines kept in memory while Developer mode is on. |
+| `CONSOLE_LINES` | `60` | MicroPython only. The same setting, for the MicroPython version. |
 | `MAX_WEB_CLIENTS` | `6` | MicroPython only. Web connections handled at once. |
 | `LED_PIN` | `None` | MicroPython only. Pin number of a status LED, or `None`. XIAO ESP32S3: 21. Many ESP32 dev boards: 2. |
 | `LED_ACTIVE_LOW` | `True` | MicroPython only. `True` if the LED lights when the pin is low (XIAO), `False` for most dev boards. |
@@ -571,6 +681,9 @@ Approximate static RAM use of the Arduino version (the Arduino build also stores
 | Seen-ID ring (256 × 8 B) | 2 KB |
 | Rooms (24 × ~56 B) | ~1.3 KB |
 | Poll response buffer | 6 KB |
+| Developer console lines (80 × ~170 B) | ~14 KB |
+| Developer packet capture (12 × ~260 B) | ~3 KB |
+| Developer console reply buffer | 9 KB |
 
 Persistent storage (NVS, namespace `johnify`) holds the comma-separated list of chat codes and the repeater flag. A value is only written when it has changed, so normal use does not wear the flash. Messages are not written to flash, so they are lost on power loss; phones keep their own copies.
 
@@ -616,6 +729,8 @@ Other limits:
 
 **Known limit (Arduino).** The Arduino web server library reads a whole request body into memory before the handler runs and has no size cap, so a deliberately oversized request from a device on the hotspot could use up memory. Use `AP_PASSWORD` if you do not want unknown devices on the hotspot.
 
+## Security model
+
 ### What is protected
 
 - **Confidentiality of name and text** against anyone who does not have the chat code.
@@ -633,11 +748,12 @@ Other limits:
 - **Phone to board link.** The phone talks to the board over plain HTTP on the board's Wi-Fi. The board sees the message in plain text before encrypting it, which is expected, but anyone connected to an open Johnify hotspot could observe that HTTP traffic. Set `AP_PASSWORD` if that matters.
 - **Physical access.** Chat codes are stored in the board's flash in plain text.
 - **Denial of service.** Anyone can jam 2.4 GHz or flood ESP-NOW with junk packets.
+- **Developer mode is open to anyone on the hotspot.** It never shows chat codes, keys or message text (see [Developer mode](#developer-mode)), but it does show phone IP addresses, request paths, signal strengths and packet metadata. It only runs while someone has it open and stops 8 seconds after they leave. Set `AP_PASSWORD` to control who can reach it.
 - **Anyone on the hotspot can reset the board.** `POST /api/reset` has no login. The `POST` and confirmation word only protect against accidents. On an open hotspot, any device that joins could wipe the board. Set `AP_PASSWORD` if that matters.
 
 This project has not had an independent security review.
 
-Firmware version: 1.3.0.
+Firmware version: 1.4.0 (Johnify Lite: 1.3.0).
 
 ## Troubleshooting
 
@@ -654,9 +770,40 @@ Firmware version: 1.3.0.
 | `MemoryError` or repeated "Memory low" in the log on MicroPython | Lower `MAX_ROOMS` and `MAX_MSGS`. See the table under Requirements. On a board with PSRAM, use a firmware build that has PSRAM support. |
 | MicroPython page shows "Johnify web page not found" | `johnify.html` is not on the board, or is not in the top-level folder, or was renamed (then set `PAGE_FILE`). Copy it again and check with `mpremote fs ls`. |
 | MicroPython prints "encryption.py is missing" and stops | Copy `encryption.py` (or `encryption.mpy`) to the board's top-level folder. |
+| Developer mode shows `n/a` for temperature | The chip has no usable temperature sensor. The original ESP32 does not. |
 | `mpremote` or `esptool` cannot find or open the port | The port name differs from the example, and it changes between bootloader mode and normal mode. Look it up again (see the port box under Install). Try another USB cable, since some only charge. On Linux, add your user to the `dialout` group. |
 | `ImportError: no module named 'espnow'` | The MicroPython build is too old or is not an ESP32 build. Use 1.21 or newer. |
 | MicroPython board reboots every 30 seconds while you work | The watchdog is on. Set `USE_WATCHDOG = False` while developing. |
 | MicroPython prints `Radio error` or `Radio send failed` | Check the log in the bug report. Repeated failures restart the radio automatically. |
 
 The status LED, where there is one, blinks on each packet sent or received. On Arduino it is the board's built-in LED. On MicroPython set `LED_PIN`.
+
+## Changelog
+
+### 1.4.0
+- **Added Developer mode** to Settings: live console (requests, packets with hex, encryption, chat and Wi-Fi events), chip temperature, CPU use, memory and storage, and connected devices. It only exists while its button is pressed, never shows secrets, and stops by itself. New endpoints `/api/dev`, `/api/console` and `/api/perf`.
+- **Fixed a secret leak in the event log.** Two log lines printed the first five characters of a chat code. They now show a harmless ID. The lines appeared in the bug report text too.
+- **MicroPython is now three files** (`main.py`, `johnify.html`, `encryption.py`) so each compiles separately and the page is read from flash.
+- **Added Johnify Lite**, a frozen copy of 1.3.0 for MicroPython, in `Johnify-Lite-MicroPython/`.
+- Removed the demo site.
+
+### 1.3.0
+- **Fixed Leave doing nothing** on phones. The confirmation was a browser pop-up, which "sign in to network" browsers block. Confirmations are now dialogs inside the page.
+- Leaving a chat now also makes the board forget it (`/api/leave`).
+- **Added Reset board** to Settings (`/api/reset`): erases chats, messages, counters and saved settings on the board and the phone, then restarts the board.
+
+### 1.2.0
+- New web app design with the phone's own fonts, an asymmetric Settings page, and a single page-load reveal.
+- Arduino: the web server runs in its own task, so a slow phone connection cannot delay the radio.
+- MicroPython: the page is streamed from flash instead of held in RAM, with settings for small boards; works on many ESP32-family boards.
+
+### 1.1.0
+- Event log, counters, health checks and self-recovery, plain-language error messages, and the **Copy bug report** button.
+- First MicroPython port, byte-compatible with the Arduino version.
+
+### 1.0.0
+- First release: ESP-NOW group chat, hotspot web app, AES-256-GCM encryption from a shared chat code, duplicate suppression, repeater mode, and a captive portal.
+
+## License
+
+Choose a license and add a `LICENSE` file for the Johnify code.
