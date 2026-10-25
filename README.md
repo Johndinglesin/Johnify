@@ -786,6 +786,7 @@ The status LED, where there is one, blinks on each packet sent or received. On A
 - **MicroPython is now three files** (`main.py`, `johnify.html`, `encryption.py`) so each compiles separately and the page is read from flash.
 - **Added Johnify Lite**, a frozen copy of 1.3.0 for MicroPython, in `Johnify-Lite-MicroPython/`.
 - Removed the demo site.
+- **Fixed a crash in Developer mode on MicroPython.** On some MicroPython builds the Wi-Fi station list gives a text value (such as an IP address) where the signal strength was expected, which stopped Developer mode's background task with `TypeError: can't convert str to int`. Signal strength is now used only when it is a real number (otherwise it is left blank), and an error while tracking devices is logged instead of stopping Developer mode.
 
 ### 1.3.0
 - **Fixed Leave doing nothing** on phones. The confirmation was a browser pop-up, which "sign in to network" browsers block. Confirmations are now dialogs inside the page.
