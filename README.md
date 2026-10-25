@@ -803,7 +803,3 @@ The status LED, where there is one, blinks on each packet sent or received. On A
 
 ### 1.0.0
 - First release: ESP-NOW group chat, hotspot web app, AES-256-GCM encryption from a shared chat code, duplicate suppression, repeater mode, and a captive portal.
-
-## License
-
-Choose a license and add a `LICENSE` file for the Johnify code.
