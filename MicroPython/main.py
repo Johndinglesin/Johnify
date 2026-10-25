@@ -221,7 +221,10 @@ def track_stations():
     cur = {}
     for item in listing:
         try:
-            cur[bytes(item[0])] = item[1] if len(item) > 1 else None
+            rssi = item[1] if len(item) > 1 else None
+            if isinstance(rssi, bool) or not isinstance(rssi, (int, float)):
+                rssi = None
+            cur[bytes(item[0])] = int(rssi) if rssi is not None else None
         except Exception:
             pass
     for mac in cur:
@@ -249,7 +252,10 @@ async def dev_task():
             last = now
             cpu_pct = min(100, busy_us * 100 // win) if win > 0 else 0
             busy_us = 0
-            track_stations()
+            try:
+                track_stations()
+            except Exception as ex:
+                log("Device tracking error: %s" % ex)
     finally:
         dev_task_on = False
 
