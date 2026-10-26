@@ -44,6 +44,7 @@ All three serve the same web app, speak the same packet format, and use the same
 - No infrastructure. Boards talk to each other directly; phones talk only to their local board.
 - Chat rooms identified by a 10-character code. Anyone with the code can join. Anyone without it cannot read the traffic.
 - End-to-end encryption: AES-256-GCM, with the key derived from the chat code. The key never leaves the board and the phone, and is never transmitted.
+- Wi-Fi settings in the app: change the board's network name, password and channel from Settings, with no code editing. See [Changing the Wi-Fi settings](#changing-the-wi-fi-settings).
 - Nearby boards count: each board sends a tiny beacon every 30 seconds or so, and the app shows how many other boards it can hear ("3 boards in range"). Radio broadcast has no delivery confirmation, so this is how you can tell whether you are connected to anything at all. See [Nearby boards](#nearby-boards).
 - Duplicate suppression: the same message arriving twice (retransmits, repeaters) is shown once.
 - Repeater mode: a board can re-broadcast any message it hears, for any chat, up to a hop limit. Repeaters do not need to know the chat code and cannot read the messages they relay.
@@ -284,7 +285,20 @@ Johnify Lite is a frozen copy of **Johnify 1.3.0** for MicroPython, kept in the 
 
 **Leaving a chat.** Open the chat and press **Leave**, then confirm in the dialog. The chat and its saved messages are deleted from your phone, and the board forgets the chat too: it stops keeping messages for it and removes it from its saved list. You can join again later with the code. If another phone on the same board is still in that chat, that phone re-adds it automatically within a couple of seconds.
 
-**Resetting the board.** In Settings, press **Reset board** and confirm. The board erases every chat, message, counter, log line and setting it holds, turns repeater mode off, clears its saved data in flash, and restarts, so it behaves like freshly uploaded firmware. Your phone's saved chats, name and device ID are cleared too, because otherwise the phone would put the chats straight back. Other phones keep their own copies and re-add their chats when they next connect. The Wi-Fi network disappears for a few seconds while the board restarts. The firmware itself is not touched.
+### Changing the Wi-Fi settings
+
+Settings has two sections: **Wi-Fi** (network name and password) and **Channel** (1 to 11). Each has its own **Save and restart board** button, and saving one section leaves the other's value as it was. Change what you want, press the button, and confirm. The values are saved in the board's flash, the board restarts, and its network disappears for a few seconds. Join the new name on your phone (with the new password, if you set one) and open `http://192.168.4.1` again.
+
+- **Name.** 1 to 32 characters, without quotes or backslashes.
+- **Password.** Leave the field blank to keep the current password. Tick **Open network** for no password, or type a new one of 8 to 63 letters, numbers or symbols.
+- **Channel.** **Every board in a network must use the same channel**, or the boards stop hearing each other. Chats between a board you changed and a board you did not will stop working until both match. The "boards in range" line under the header is a quick way to check. Channels 12 and 13 are left out because they are not allowed in every country.
+- **Use the firmware defaults** (in the Wi-Fi section) removes all saved values, name, password and channel, so the board goes back to `AP_SSID_PREFIX`, `AP_PASSWORD` and `WIFI_CHANNEL` from the code.
+- **Reset board** also removes the saved Wi-Fi settings.
+- **Lost the password or set the wrong channel?** You cannot reach the Settings page without joining the network, so recovery needs a cable. MicroPython: `mpremote connect <port> exec "import esp32;n=esp32.NVS('johnify');n.set_i32('wset',0);n.commit()"`, then restart the board. Arduino: upload the sketch again with **Tools, Erase All Flash Before Sketch Upload** set to *Enabled*, which also erases saved chats.
+
+### Resetting the board
+
+In Settings, press **Reset board** and confirm. The board erases every chat, message, counter, log line and setting it holds (including saved Wi-Fi settings), turns repeater mode off, clears its saved data in flash, and restarts, so it behaves like freshly uploaded firmware. Your phone's saved chats, name and device ID are cleared too, because otherwise the phone would put the chats straight back. Other phones keep their own copies and re-add their chats when they next connect. The Wi-Fi network disappears for a few seconds while the board restarts. The firmware itself is not touched.
 
 If the page does not load, turn off mobile data on the phone. Some phones route browser traffic over cellular when the Wi-Fi network has no internet.
 
@@ -485,7 +499,7 @@ Broadcast packets are not acknowledged, so a sender cannot tell whether anyone h
 
 ## Radio notes
 
-- **Channel.** All boards must use the same Wi-Fi channel (`WIFI_CHANNEL`, default 1). The access point fixes the radio to that channel, and ESP-NOW peers are added with `channel = 0` so they follow the radio. Boards on different channels cannot hear each other.
+- **Channel.** All boards must use the same Wi-Fi channel (`WIFI_CHANNEL`, default 1, or the channel saved from Settings). The access point fixes the radio to that channel, and ESP-NOW peers are added with `channel = 0` so they follow the radio. Boards on different channels cannot hear each other.
 - **Interface.** The broadcast peer is registered on `WIFI_IF_STA`. The soft AP and ESP-NOW share the radio, so ESP-NOW traffic and phone Wi-Fi traffic compete for airtime.
 - **Power save.** Wi-Fi sleep is disabled (`WiFi.setSleep(false)`) so the radio is always listening.
 - **TX power.** Set to the maximum (19.5 dBm).
@@ -566,7 +580,7 @@ The board's last 16 events (start-up, radio failures, full queues, restarts), ol
 
 ```json
 { "ver": "1.4.0", "chip": "ESP32-S3", "sdk": "v5.4.1", "repeater": false,
-  "ssid": "Johnify-9F3A", "ch": 1, "hops": 4, "clients": 2, "rooms": 3,
+  "ssid": "Johnify-9F3A", "ch": 1, "pw": false, "wcustom": false, "hops": 4, "clients": 2, "rooms": 3,
   "rx": 118, "tx": 64, "relayed": 0,
   "rxDrop": 0, "txFail": 0, "bad": 3, "auth": 0, "reinit": 0, "near": 2,
   "heap": 214000, "minHeap": 186000, "up": 5321 }
@@ -583,6 +597,16 @@ Makes the board forget a chat: the chat is removed from the board's table and it
 ```json
 { "ok": true }
 ```
+
+### `POST /api/wifi` (form: `confirm=APPLY`, and any of `ssid`, `pass`, `ch`, or `default=1`)
+
+Saves the board's Wi-Fi name, password and channel to flash, replies, and restarts the board about 0.8 seconds later. Fields that are left out keep their current value. `pass` set to an empty value makes the network open. `default=1` removes the saved values and goes back to the settings in the code. `POST` only, and the confirmation word must be present.
+
+```json
+{ "ok": true, "ssid": "Camp Net", "ch": 6, "pw": true }
+```
+
+Rules: `ssid` is 1 to 32 bytes with no control characters, quotes or backslashes; `pass` is empty or 8 to 63 printable ASCII characters; `ch` is 1 to 11. Errors: `post only` (405), `confirm`, `bad ssid`, `bad pass`, `bad channel` (400), `storage` (500). The password is never sent back: `/api/status` reports only whether one is set (`pw`) and whether saved settings are in use (`wcustom`).
 
 ### `POST /api/reset` (form: `confirm=RESET`)
 
@@ -680,9 +704,9 @@ Settings are `#define`s at the top of `Johnify.ino`, or variables of the same na
 
 | Name | Default | Description |
 |------|--------:|-------------|
-| `AP_SSID_PREFIX` | `"Johnify-"` | Wi-Fi name prefix. The last 4 hex digits of the MAC are appended. |
-| `AP_PASSWORD` | `""` | Empty for an open network. 8+ characters to require a WPA2 password. |
-| `WIFI_CHANNEL` | `1` | Must match on all boards. |
+| `AP_SSID_PREFIX` | `"Johnify-"` | Default Wi-Fi name prefix. The last 4 hex digits of the MAC are appended. A name saved from Settings replaces it. |
+| `AP_PASSWORD` | `""` | Default password. Empty for an open network, 8+ characters to require a WPA2 password. A password saved from Settings replaces it. |
+| `WIFI_CHANNEL` | `1` | Default channel, 1 to 11. Must match on all boards. A channel saved from Settings replaces it. |
 | `MAX_HOPS` | `4` | Maximum repeater hops. |
 | `MAX_ROOMS` | `24` | Chats stored per board. |
 | `MAX_MSGS` | `200` | Messages kept in RAM per board. |
@@ -716,7 +740,7 @@ Approximate static RAM use of the Arduino version (the Arduino build also stores
 | Developer packet capture (12 × ~260 B) | ~3 KB |
 | Developer console reply buffer | 9 KB |
 
-Persistent storage (NVS, namespace `johnify`) holds the comma-separated list of chat codes and the repeater flag. A value is only written when it has changed, so normal use does not wear the flash. Messages are not written to flash, so they are lost on power loss; phones keep their own copies.
+Persistent storage (NVS, namespace `johnify`) holds the comma-separated list of chat codes, the repeater flag, and the Wi-Fi name, password and channel if they were changed in Settings. A value is only written when it has changed, so normal use does not wear the flash. Messages are not written to flash, so they are lost on power loss; phones keep their own copies.
 
 Other limits:
 
@@ -778,9 +802,10 @@ Other limits:
 - **Offline guessing.** An attacker who captures one packet can test candidate codes offline, using the group ID or the GCM tag as the check. Each guess costs about 5,000 SHA-256 operations. With a 49.5-bit code and that stretching, the work to exhaust the space is roughly 2^62 hash operations. That is out of reach for casual attackers but not a margin you should rely on against a well-funded one. A longer code or a real memory-hard KDF would improve this.
 - **Replay.** GCM does not stop an attacker from re-broadcasting a captured packet. The duplicate ring only remembers 256 recent messages, so a replay after enough newer traffic would be accepted again by a board. Phones de-duplicate by message ID in their saved history, which hides most replays in the UI.
 - **Phone to board link.** The phone talks to the board over plain HTTP on the board's Wi-Fi. The board sees the message in plain text before encrypting it, which is expected, but anyone connected to an open Johnify hotspot could observe that HTTP traffic. Set `AP_PASSWORD` if that matters.
-- **Physical access.** Chat codes are stored in the board's flash in plain text.
+- **Physical access.** Chat codes and any Wi-Fi password saved from Settings are stored in the board's flash in plain text.
 - **Denial of service.** Anyone can jam 2.4 GHz or flood ESP-NOW with junk packets.
 - **Developer mode is open to anyone on the hotspot.** It never shows chat codes, keys or message text (see [Developer mode](#developer-mode)), but it does show phone IP addresses, request paths, signal strengths and packet metadata. It only runs while someone has it open and stops 8 seconds after they leave. Set `AP_PASSWORD` to control who can reach it.
+- **Anyone on the hotspot can change its Wi-Fi settings.** `POST /api/wifi` has no login either. On an open hotspot, any device that joins could change the name, password and channel, which locks everyone else out until someone with a cable fixes it (see [Changing the Wi-Fi settings](#changing-the-wi-fi-settings)). A new password also travels over the board's current network in plain HTTP, so if the hotspot is still open when you set it, someone listening at that moment could read it. Set the password in a place you trust. The password is never shown in the console, the status reply or the bug report.
 - **Anyone on the hotspot can reset the board.** `POST /api/reset` has no login. The `POST` and confirmation word only protect against accidents. On an open hotspot, any device that joins could wipe the board. Set `AP_PASSWORD` if that matters.
 
 This project has not had an independent security review.
@@ -793,6 +818,8 @@ Firmware version: 1.4.0 (Johnify Lite: 1.3.0).
 |---------|-----------------|
 | Johnify network does not appear | Board powered? Wait a few seconds after boot. Try the serial monitor for the printed SSID. |
 | Page does not load | Open `http://192.168.4.1` directly. Turn off mobile data. Some phones need the captive-portal prompt dismissed first. |
+| After changing Wi-Fi settings, boards no longer hear each other | The channel must be the same on every board. Open Settings on each board and set the same channel. |
+| Cannot join the board's network any more | The name or password was changed, or the board is on an unexpected channel. Check the name you saved. If the password is lost, use the cable recovery in [Changing the Wi-Fi settings](#changing-the-wi-fi-settings). |
 | App says "No other boards in range" | No beacon was heard in the last 100 seconds. Check that the other board is powered and runs 1.4.0 with beacons (Lite does not send them), that both use the same `WIFI_CHANNEL`, and that they are within range. Messages can still reach boards that are not counted. |
 | `bad` counter rises about twice a minute | A nearby board running an older 1.4.0 build without beacon support sees the new beacon packets as unrecognised. Harmless. Update that board to remove it. |
 | Dot next to the title is red | The phone left the board's Wi-Fi, or the board rebooted. Reconnect. |
@@ -819,6 +846,7 @@ The status LED, where there is one, blinks on each packet sent or received. On A
 - **Fixed a secret leak in the event log.** Two log lines printed the first five characters of a chat code. They now show a harmless ID. The lines appeared in the bug report text too.
 - **MicroPython is now three files** (`main.py`, `johnify.html`, `encryption.py`) so each compiles separately and the page is read from flash.
 - **Added Johnify Lite**, a frozen copy of 1.3.0 for MicroPython, in `Johnify-Lite-MicroPython/`.
+- **Added configurable Wi-Fi settings.** Settings has a Wi-Fi section (name and password) and a separate Channel section, each with its own Save and restart button, so you can change the board's Wi-Fi name, password and channel (1 to 11) without editing the code. The values are saved in flash, the board restarts to apply them, "Use the firmware defaults" undoes them, and Reset board clears them. New endpoint `/api/wifi`, new `pw` and `wcustom` fields in `/api/status`. Works the same on Arduino and MicroPython. The code settings `AP_SSID_PREFIX`, `AP_PASSWORD` and `WIFI_CHANNEL` are now defaults.
 - **Added a nearby boards count.** Each board sends an 8-byte beacon about every 30 seconds, and the app shows "N boards in range" under the header, so you can tell whether you are connected to anything at all. New packet type (`JB`), implemented in both the Arduino and MicroPython versions, and a new `near` field in `/api/poll` and `/api/status`. Boards on older 1.4.0 builds ignore beacons but count them under `bad`.
 - Removed the demo site.
 - **Fixed a crash in Developer mode on MicroPython.** On some MicroPython builds the Wi-Fi station list gives a text value (such as an IP address) where the signal strength was expected, which stopped Developer mode's background task with `TypeError: can't convert str to int`. Signal strength is now used only when it is a real number (otherwise it is left blank), and an error while tracking devices is logged instead of stopping Developer mode.
