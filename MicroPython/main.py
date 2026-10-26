@@ -36,9 +36,9 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # Settings. Change these before uploading if you need to.
 # ---------------------------------------------------------------------------
-AP_SSID_PREFIX = "Johnify-"  # Wi-Fi name is this plus 4 characters from the board's MAC
-AP_PASSWORD = ""             # Empty means an open network. Use 8 or more characters to set a password.
-WIFI_CHANNEL = 1             # Must be the same on every board, or they will not hear each other.
+AP_SSID_PREFIX = "Johnify-"  # Default Wi-Fi name: this plus 4 characters from the board's MAC. Can be changed in Settings.
+AP_PASSWORD = ""             # Default password. Empty means an open network, otherwise 8 or more characters. Can be changed in Settings.
+WIFI_CHANNEL = 1             # Default channel (1 to 11). Must be the same on every board. Can be changed in Settings.
 MAX_HOPS = 4                 # How many repeaters a message may pass through.
 MAX_ROOMS = 24               # Chats a single board remembers.
 MAX_MSGS = 200               # Recent messages a board keeps in memory.
@@ -78,6 +78,10 @@ near = {}
 next_beacon = 0
 t0 = time.time()
 ssid = ""
+def_ssid = ""
+wifi_pass = AP_PASSWORD
+wifi_ch = WIFI_CHANNEL
+wifi_custom = False
 ap_ip = "192.168.4.1"
 ap = None
 sta = None
@@ -426,6 +430,64 @@ def load_rooms():
             pending.append(code)
 
 
+def valid_ssid(s):
+    b = s.encode()
+    if len(b) < 1 or len(b) > 32 or '"' in s or "\\" in s:
+        return False
+    for c in b:
+        if c < 32 or c == 127:
+            return False
+    return True
+
+
+def valid_pass(s):
+    if s == "":
+        return True
+    if len(s) < 8 or len(s) > 63:
+        return False
+    for c in s:
+        if ord(c) < 32 or ord(c) > 126:
+            return False
+    return True
+
+
+def nvs_text(key, size):
+    buf = bytearray(size)
+    n = nvs.get_blob(key, buf)
+    return bytes(buf[:n]).decode()
+
+
+def load_wifi():
+    global ssid, wifi_pass, wifi_ch, wifi_custom
+    if nvs is None:
+        return
+    try:
+        if nvs.get_i32("wset") != 1:
+            return
+    except OSError:
+        return
+    try:
+        n = nvs_text("wssid", 40)
+        if valid_ssid(n):
+            ssid = n
+    except Exception:
+        pass
+    try:
+        p = nvs_text("wpass", 70) if nvs.get_i32("wopen") != 1 else ""
+        if valid_pass(p):
+            wifi_pass = p
+    except Exception:
+        pass
+    try:
+        c = nvs.get_i32("wch")
+        if 1 <= c <= 11:
+            wifi_ch = c
+    except Exception:
+        pass
+    wifi_custom = True
+    log("Using saved Wi-Fi settings")
+
+
 def ensure_room(code, evict):
     r = rooms.get(code)
     if r is not None:
@@ -701,7 +763,7 @@ def h_status(q):
         drop = 0
     u = os.uname()
     return j({"ver": VERSION, "chip": u.machine[:40], "sdk": "MicroPython " + u.release,
-              "repeater": repeater_on, "ssid": ssid, "ch": WIFI_CHANNEL, "hops": MAX_HOPS,
+              "repeater": repeater_on, "ssid": ssid, "ch": wifi_ch, "pw": len(wifi_pass) >= 8, "wcustom": wifi_custom, "hops": MAX_HOPS,
               "clients": clients, "rooms": len(rooms), "rx": stat_rx, "tx": stat_tx, "relayed": stat_relay,
               "rxDrop": drop, "txFail": stat_txfail, "bad": stat_bad, "auth": stat_auth, "reinit": stat_reinit,
               "near": near_count(), "heap": free, "minHeap": min_free, "up": uptime()})
@@ -775,7 +837,7 @@ def h_reset(q):
     except Exception:
         rxdrop_base = 0
     if nvs is not None:
-        for key in ("rooms", "rep"):
+        for key in ("rooms", "rep", "wset", "wssid", "wpass", "wopen", "wch"):
             try:
                 nvs.erase_key(key)
             except OSError:
@@ -787,6 +849,53 @@ def h_reset(q):
     saved_rooms = ""
     restart_at = time.ticks_add(time.ticks_ms(), 800)
     return j({"ok": True})
+
+
+def h_wifi(q):
+    global restart_at
+    if q.get("__method") != "POST":
+        return fail(405, "post only")
+    if q.get("confirm") != "APPLY":
+        return fail(400, "confirm")
+    if nvs is None:
+        return fail(500, "storage")
+    if q.get("default") == "1":
+        for key in ("wset", "wssid", "wpass", "wopen", "wch"):
+            try:
+                nvs.erase_key(key)
+            except OSError:
+                pass
+        try:
+            nvs.commit()
+        except Exception:
+            return fail(500, "storage")
+        out = {"ok": True, "ssid": def_ssid, "ch": WIFI_CHANNEL, "pw": len(AP_PASSWORD) >= 8}
+    else:
+        n = q["ssid"].strip() if "ssid" in q else ssid
+        p = q["pass"] if "pass" in q else wifi_pass
+        c = to_int(q["ch"]) if "ch" in q else wifi_ch
+        if not valid_ssid(n):
+            return fail(400, "bad ssid")
+        if not valid_pass(p):
+            return fail(400, "bad pass")
+        if c < 1 or c > 11:
+            return fail(400, "bad channel")
+        try:
+            nvs.set_blob("wssid", n.encode())
+            if p:
+                nvs.set_blob("wpass", p.encode())
+            nvs.set_i32("wopen", 0 if p else 1)
+            nvs.set_i32("wch", c)
+            nvs.set_i32("wset", 1)
+            nvs.commit()
+        except Exception:
+            log("Could not save Wi-Fi settings")
+            return fail(500, "storage")
+        out = {"ok": True, "ssid": n, "ch": c, "pw": bool(p)}
+    log("Wi-Fi settings changed, restarting")
+    dev_stop()
+    restart_at = time.ticks_add(time.ticks_ms(), 800)
+    return j(out)
 
 
 def h_dev(q):
@@ -882,7 +991,7 @@ def h_perf(q):
 
 ROUTES = {"/api/hello": h_hello, "/api/join": h_join, "/api/send": h_send, "/api/poll": h_poll,
           "/api/status": h_status, "/api/log": h_log, "/api/repeater": h_repeater,
-          "/api/leave": h_leave, "/api/reset": h_reset,
+          "/api/leave": h_leave, "/api/reset": h_reset, "/api/wifi": h_wifi,
           "/api/dev": h_dev, "/api/console": h_console, "/api/perf": h_perf}
 
 
@@ -1217,7 +1326,7 @@ async def health_task():
 
 
 def setup():
-    global ap, sta, ssid, ap_ip, led, repeater_on, wdt, next_beacon
+    global ap, sta, ssid, def_ssid, ap_ip, led, repeater_on, wdt, next_beacon
     if LED_PIN is not None:
         try:
             led = machine.Pin(LED_PIN, machine.Pin.OUT)
@@ -1239,12 +1348,14 @@ def setup():
     ap.active(True)
     mac = sta.config("mac")
     ssid = "%s%02X%02X" % (AP_SSID_PREFIX, mac[4], mac[5])
-    if AP_PASSWORD and len(AP_PASSWORD) < 8:
-        log("AP_PASSWORD under 8 characters, network left open")
-    opts = {"essid": ssid, "channel": WIFI_CHANNEL}
-    if len(AP_PASSWORD) >= 8:
+    def_ssid = ssid
+    load_wifi()
+    if wifi_pass and len(wifi_pass) < 8:
+        log("Wi-Fi password under 8 characters, network left open")
+    opts = {"essid": ssid, "channel": wifi_ch}
+    if len(wifi_pass) >= 8:
         opts["authmode"] = network.AUTH_WPA2_PSK
-        opts["password"] = AP_PASSWORD
+        opts["password"] = wifi_pass
     else:
         opts["authmode"] = network.AUTH_OPEN
     try:
@@ -1253,7 +1364,7 @@ def setup():
         ap.config(**opts)
     ap.active(True)
     ap_ip = ap.ifconfig()[0]
-    tuning = [{"channel": WIFI_CHANNEL}, {"txpower": 19.5}]
+    tuning = [{"channel": wifi_ch}, {"txpower": 19.5}]
     pm_none = getattr(network.WLAN, "PM_NONE", None)
     if pm_none is not None:
         tuning.append({"pm": pm_none})
