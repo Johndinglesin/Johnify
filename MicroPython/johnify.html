@@ -26,6 +26,11 @@ header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;paddi
 .btn.pri{background:var(--pri);border-color:var(--pri);color:var(--pritx)}
 .btn.warn{background:var(--acc);border-color:var(--acc);color:var(--acctx)}
 .btn.wide{width:100%;padding:14px;font-size:14px}
+.btn.wide+.btn.wide{margin-top:8px}
+.chk{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:14px}
+.chk input{width:20px;height:20px;accent-color:var(--pri)}
+select.field{appearance:auto;-webkit-appearance:menulist;background:var(--card)}
+.note{font-size:13px;opacity:.8}
 .icon{flex:none;width:38px;height:38px;border:2px solid var(--ink);border-radius:8px;background:none;display:grid;place-items:center;cursor:pointer}
 .icon.on{background:var(--ink);color:var(--paper)}
 @media(max-width:380px){.word{font-size:28px}.btn{padding:9px 9px;font-size:12px}.icon{width:34px;height:34px}}
@@ -190,7 +195,7 @@ const save=()=>{try{localStorage.setItem('jf',JSON.stringify(S))}catch(e){
   if(storeOK){storeOK=false;setTimeout(()=>toast('This browser cannot save chats. History is lost when you close the page.'),0)}}};
 
 let cur=null,view='list',busy=false,again=false,fails=0,sending=false,stT=null;
-const MSG={'bad room':'That chat code is not valid.','bad dev':'Your phone ID is missing. Reload the page.','empty':'Type a message first.',
+const MSG={'bad ssid':'That network name is not valid. Use 1 to 32 characters, without quotes or backslashes.','bad pass':'The password must be 8 to 63 letters, numbers or symbols.','bad channel':'Choose a channel from 1 to 11.','storage':'The board could not save the settings.','bad room':'That chat code is not valid.','bad dev':'Your phone ID is missing. Reload the page.','empty':'Type a message first.',
   'crypto':'The board could not encrypt that message.','radio busy':'The radio is busy. Try again in a moment.'};
 const why=e=>e&&e.net?(e.message==='timeout'?'The board is not answering.':'Cannot reach the board. Check your Wi-Fi.'):((e&&MSG[e.message])||'Board error: '+((e&&e.message)||'unknown'));
 
@@ -506,14 +511,56 @@ function drawSettings(v){
   const net=el('div','tile wide'),health=el('div','tile wide');
   net.append(el('h3',0,'This board'));health.append(el('h3',0,'Health'));
 
+  const wf=el('div','tile wide'),wch=el('div','tile wide');
+  wf.append(el('h3',0,'Wi-Fi'),el('p',0,'Change the name and password of this board\'s network. The board restarts and every phone has to join again.'));
+  const wn=el('input','field');wn.maxLength=32;wn.placeholder='Network name';wn.setAttribute('aria-label','Wi-Fi network name');
+  const wp=el('input','field');wp.type='password';wp.maxLength=63;wp.autocomplete='new-password';wp.setAttribute('aria-label','New Wi-Fi password');
+  const wo=el('input');wo.type='checkbox';
+  const wol=el('label','chk');wol.append(wo,el('span',0,'Open network (no password)'));
+  const wsh=el('label','chk'),wshc=el('input');wshc.type='checkbox';wsh.append(wshc,el('span',0,'Show password'));
+  wshc.onchange=()=>{wp.type=wshc.checked?'text':'password'};
+  const syncPw=()=>{wp.disabled=wo.checked;if(wo.checked)wp.value=''};
+  wo.onchange=syncPw;
+  const wsave=el('button','btn wide','Save and restart board'),wdef=el('button','btn wide','Use the firmware defaults'),wmsg=el('p','note');
+  wch.append(el('h3',0,'Channel'),el('p',0,'The radio channel (1 to 11). Every board must be on the same channel, or the boards stop hearing each other and chats between them stop working. Change it on all your boards.'));
+  const wc=el('select','field');wc.setAttribute('aria-label','Wi-Fi channel');
+  for(let i=1;i<=11;i++){const o=el('option',0,'Channel '+i);o.value=i;wc.append(o)}
+  const csave=el('button','btn wide','Save and restart board');
+  let pwSet=false,wfInit=false;
+  const wdone=r=>{
+    clearInterval(stT);S.ssid=r.ssid;save();
+    for(const t of[wf,wch]){t.innerHTML=''}
+    wf.append(el('h3',0,'Restarting'),el('p',0,'The board is restarting and its Wi-Fi network is going away for a few seconds. On your phone, join \u201c'+r.ssid+'\u201d'+(r.pw?' with the password you set':' (no password)')+', then open http://192.168.4.1 again. Channel: '+r.ch+'.'));wch.hidden=true};
+  wsave.onclick=async()=>{
+    const name=wn.value.trim(),open=wo.checked,pw=wp.value;
+    if(!name||new TextEncoder().encode(name).length>32||/[\u0000-\u001f\u007f"\\]/.test(name)){toast('The network name must be 1 to 32 characters, without quotes or backslashes.');return}
+    if(!open&&pw&&(pw.length<8||/[^\u0020-\u007e]/.test(pw))){toast('The password must be 8 to 63 letters, numbers or symbols.');return}
+    const o={confirm:'APPLY',ssid:name};
+    if(open)o.pass='';else if(pw)o.pass=pw;
+    const pwText=open?'none (open network)':pw?'new password':pwSet?'unchanged':'none (open network)';
+    if(!await ask('Change the Wi-Fi network?','Network: '+name+'. Password: '+pwText+'. The board restarts now and phones must join again.','Save and restart'))return;
+    try{wdone(await api('/api/wifi',o,true))}catch(e){toast(why(e))}};
+  csave.onclick=async()=>{
+    if(!await ask('Change the channel?','This board will use channel '+wc.value+'. It restarts now, and phones must join again. Every other board must be set to the same channel, or they will not hear this one.','Save and restart'))return;
+    try{wdone(await api('/api/wifi',{confirm:'APPLY',ch:wc.value},true))}catch(e){toast(why(e))}};
+  wdef.onclick=async()=>{
+    if(!await ask('Use the firmware defaults?','The network name, password and channel go back to the values in the firmware. The board restarts now and phones must join again.','Use defaults'))return;
+    try{wdone(await api('/api/wifi',{confirm:'APPLY',default:1},true))}catch(e){toast(why(e))}};
+  wf.append(wn,wol,wp,wsh,wsave,wdef,wmsg);
+  wch.append(wc,csave);
+  const wfill=s=>{
+    wmsg.textContent=s.wcustom?'Saved Wi-Fi settings are in use (name, password, channel). Use the firmware defaults to undo them.':'Using the settings built into the firmware.';
+    if(wfInit)return;wfInit=true;pwSet=!!s.pw;wn.value=s.ssid;wc.value=s.ch;wo.checked=!s.pw;syncPw();
+    wp.placeholder=s.pw?'New password (blank keeps the current one)':'New password (8 or more characters)'};
+
   const rst=el('div','tile wide'),rb=el('button','btn wide warn','Reset board');
-  rst.append(el('h3',0,'Start over'),el('p',0,'Erases every chat, message and setting on this board and on this phone, then restarts the board so it behaves like freshly uploaded firmware. Other phones keep their own copies.'),rb);
+  rst.append(el('h3',0,'Start over'),el('p',0,'Erases every chat, message and setting on this board and on this phone, including saved Wi-Fi settings, then restarts the board so it behaves like freshly uploaded firmware. Other phones keep their own copies.'),rb);
   rb.onclick=resetBoard;
   const bug=el('div','tile wide'),bt=el('button','btn wide','Copy bug report'),box=el('textarea','rep');
   box.readOnly=true;box.hidden=true;bt.onclick=()=>report(box);
   bug.append(bt,box);
 
-  [rep,tHeard,tSent,tRel,prof,net,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
+  [rep,tHeard,tSent,tRel,prof,net,wf,wch,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
   dv.onclick=()=>{if(DEV.on)stopDev();else startDev(grid,dv)};
   scr.append(head,page);v.append(scr);
 
@@ -522,7 +569,7 @@ function drawSettings(v){
   const update=async()=>{
     try{
       const s=await api('/api/status');cb.checked=!!s.repeater;
-      nHeard.textContent=s.rx;nSent.textContent=s.tx;nRel.textContent=s.relayed;
+      nHeard.textContent=s.rx;nSent.textContent=s.tx;nRel.textContent=s.relayed;wfill(s);
       rows(net,[['Wi-Fi network',s.ssid],['Phones connected',s.clients],['Chats stored',s.rooms],['Channel',s.ch],['Uptime',fmtUp(s.up)]]);
       rows(health,[['Firmware',s.ver],['Free memory',Math.round(s.heap/1024)+' KB',s.heap<30000],['Packets dropped (busy)',s.rxDrop,s.rxDrop>0],
         ['Failed sends',s.txFail,s.txFail>0],['Rejected packets',s.bad+s.auth],['Radio restarts',s.reinit,s.reinit>0]]);
