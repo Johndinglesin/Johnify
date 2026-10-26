@@ -13,9 +13,9 @@
 // ---------------------------------------------------------------------------
 // Settings. Change these before uploading if you need to.
 // ---------------------------------------------------------------------------
-#define AP_SSID_PREFIX "Johnify-"   // Wi-Fi name is this plus 4 characters from the board's MAC
-#define AP_PASSWORD    ""           // Empty means an open network. Use 8 or more characters to set a password.
-#define WIFI_CHANNEL   1            // Must be the same on every board, or they will not hear each other.
+#define AP_SSID_PREFIX "Johnify-"   // Default Wi-Fi name: this plus 4 characters from the board's MAC. Can be changed in Settings.
+#define AP_PASSWORD    ""           // Default password. Empty means an open network, otherwise 8 or more characters. Can be changed in Settings.
+#define WIFI_CHANNEL   1            // Default channel (1 to 11). Must be the same on every board. Can be changed in Settings.
 #define MAX_HOPS       4            // How many repeaters a message may pass through.
 #define MAX_ROOMS      24           // Chats a single board remembers.
 #define MAX_MSGS       200          // Recent messages a board keeps in memory.
@@ -74,7 +74,11 @@ DNSServer   dns;
 Preferences prefs;
 
 const uint8_t BCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
-char     apSsid[32];
+char     apSsid[33];
+char     defSsid[33];
+char     wifiPass[64];
+uint8_t  wifiCh = WIFI_CHANNEL;
+bool     wifiCustom = false;
 uint32_t bootId;
 bool     repeaterOn = false;
 uint32_t statRx = 0, statTx = 0, statRelay = 0;
@@ -179,6 +183,11 @@ header{flex:none;display:flex;align-items:center;gap:8px;padding:10px 14px;paddi
 .btn.pri{background:var(--pri);border-color:var(--pri);color:var(--pritx)}
 .btn.warn{background:var(--acc);border-color:var(--acc);color:var(--acctx)}
 .btn.wide{width:100%;padding:14px;font-size:14px}
+.btn.wide+.btn.wide{margin-top:8px}
+.chk{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:14px}
+.chk input{width:20px;height:20px;accent-color:var(--pri)}
+select.field{appearance:auto;-webkit-appearance:menulist;background:var(--card)}
+.note{font-size:13px;opacity:.8}
 .icon{flex:none;width:38px;height:38px;border:2px solid var(--ink);border-radius:8px;background:none;display:grid;place-items:center;cursor:pointer}
 .icon.on{background:var(--ink);color:var(--paper)}
 @media(max-width:380px){.word{font-size:28px}.btn{padding:9px 9px;font-size:12px}.icon{width:34px;height:34px}}
@@ -343,7 +352,7 @@ const save=()=>{try{localStorage.setItem('jf',JSON.stringify(S))}catch(e){
   if(storeOK){storeOK=false;setTimeout(()=>toast('This browser cannot save chats. History is lost when you close the page.'),0)}}};
 
 let cur=null,view='list',busy=false,again=false,fails=0,sending=false,stT=null;
-const MSG={'bad room':'That chat code is not valid.','bad dev':'Your phone ID is missing. Reload the page.','empty':'Type a message first.',
+const MSG={'bad ssid':'That network name is not valid. Use 1 to 32 characters, without quotes or backslashes.','bad pass':'The password must be 8 to 63 letters, numbers or symbols.','bad channel':'Choose a channel from 1 to 11.','storage':'The board could not save the settings.','bad room':'That chat code is not valid.','bad dev':'Your phone ID is missing. Reload the page.','empty':'Type a message first.',
   'crypto':'The board could not encrypt that message.','radio busy':'The radio is busy. Try again in a moment.'};
 const why=e=>e&&e.net?(e.message==='timeout'?'The board is not answering.':'Cannot reach the board. Check your Wi-Fi.'):((e&&MSG[e.message])||'Board error: '+((e&&e.message)||'unknown'));
 
@@ -659,14 +668,56 @@ function drawSettings(v){
   const net=el('div','tile wide'),health=el('div','tile wide');
   net.append(el('h3',0,'This board'));health.append(el('h3',0,'Health'));
 
+  const wf=el('div','tile wide'),wch=el('div','tile wide');
+  wf.append(el('h3',0,'Wi-Fi'),el('p',0,'Change the name and password of this board\'s network. The board restarts and every phone has to join again.'));
+  const wn=el('input','field');wn.maxLength=32;wn.placeholder='Network name';wn.setAttribute('aria-label','Wi-Fi network name');
+  const wp=el('input','field');wp.type='password';wp.maxLength=63;wp.autocomplete='new-password';wp.setAttribute('aria-label','New Wi-Fi password');
+  const wo=el('input');wo.type='checkbox';
+  const wol=el('label','chk');wol.append(wo,el('span',0,'Open network (no password)'));
+  const wsh=el('label','chk'),wshc=el('input');wshc.type='checkbox';wsh.append(wshc,el('span',0,'Show password'));
+  wshc.onchange=()=>{wp.type=wshc.checked?'text':'password'};
+  const syncPw=()=>{wp.disabled=wo.checked;if(wo.checked)wp.value=''};
+  wo.onchange=syncPw;
+  const wsave=el('button','btn wide','Save and restart board'),wdef=el('button','btn wide','Use the firmware defaults'),wmsg=el('p','note');
+  wch.append(el('h3',0,'Channel'),el('p',0,'The radio channel (1 to 11). Every board must be on the same channel, or the boards stop hearing each other and chats between them stop working. Change it on all your boards.'));
+  const wc=el('select','field');wc.setAttribute('aria-label','Wi-Fi channel');
+  for(let i=1;i<=11;i++){const o=el('option',0,'Channel '+i);o.value=i;wc.append(o)}
+  const csave=el('button','btn wide','Save and restart board');
+  let pwSet=false,wfInit=false;
+  const wdone=r=>{
+    clearInterval(stT);S.ssid=r.ssid;save();
+    for(const t of[wf,wch]){t.innerHTML=''}
+    wf.append(el('h3',0,'Restarting'),el('p',0,'The board is restarting and its Wi-Fi network is going away for a few seconds. On your phone, join \u201c'+r.ssid+'\u201d'+(r.pw?' with the password you set':' (no password)')+', then open http://192.168.4.1 again. Channel: '+r.ch+'.'));wch.hidden=true};
+  wsave.onclick=async()=>{
+    const name=wn.value.trim(),open=wo.checked,pw=wp.value;
+    if(!name||new TextEncoder().encode(name).length>32||/[\u0000-\u001f\u007f"\\]/.test(name)){toast('The network name must be 1 to 32 characters, without quotes or backslashes.');return}
+    if(!open&&pw&&(pw.length<8||/[^\u0020-\u007e]/.test(pw))){toast('The password must be 8 to 63 letters, numbers or symbols.');return}
+    const o={confirm:'APPLY',ssid:name};
+    if(open)o.pass='';else if(pw)o.pass=pw;
+    const pwText=open?'none (open network)':pw?'new password':pwSet?'unchanged':'none (open network)';
+    if(!await ask('Change the Wi-Fi network?','Network: '+name+'. Password: '+pwText+'. The board restarts now and phones must join again.','Save and restart'))return;
+    try{wdone(await api('/api/wifi',o,true))}catch(e){toast(why(e))}};
+  csave.onclick=async()=>{
+    if(!await ask('Change the channel?','This board will use channel '+wc.value+'. It restarts now, and phones must join again. Every other board must be set to the same channel, or they will not hear this one.','Save and restart'))return;
+    try{wdone(await api('/api/wifi',{confirm:'APPLY',ch:wc.value},true))}catch(e){toast(why(e))}};
+  wdef.onclick=async()=>{
+    if(!await ask('Use the firmware defaults?','The network name, password and channel go back to the values in the firmware. The board restarts now and phones must join again.','Use defaults'))return;
+    try{wdone(await api('/api/wifi',{confirm:'APPLY',default:1},true))}catch(e){toast(why(e))}};
+  wf.append(wn,wol,wp,wsh,wsave,wdef,wmsg);
+  wch.append(wc,csave);
+  const wfill=s=>{
+    wmsg.textContent=s.wcustom?'Saved Wi-Fi settings are in use (name, password, channel). Use the firmware defaults to undo them.':'Using the settings built into the firmware.';
+    if(wfInit)return;wfInit=true;pwSet=!!s.pw;wn.value=s.ssid;wc.value=s.ch;wo.checked=!s.pw;syncPw();
+    wp.placeholder=s.pw?'New password (blank keeps the current one)':'New password (8 or more characters)'};
+
   const rst=el('div','tile wide'),rb=el('button','btn wide warn','Reset board');
-  rst.append(el('h3',0,'Start over'),el('p',0,'Erases every chat, message and setting on this board and on this phone, then restarts the board so it behaves like freshly uploaded firmware. Other phones keep their own copies.'),rb);
+  rst.append(el('h3',0,'Start over'),el('p',0,'Erases every chat, message and setting on this board and on this phone, including saved Wi-Fi settings, then restarts the board so it behaves like freshly uploaded firmware. Other phones keep their own copies.'),rb);
   rb.onclick=resetBoard;
   const bug=el('div','tile wide'),bt=el('button','btn wide','Copy bug report'),box=el('textarea','rep');
   box.readOnly=true;box.hidden=true;bt.onclick=()=>report(box);
   bug.append(bt,box);
 
-  [rep,tHeard,tSent,tRel,prof,net,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
+  [rep,tHeard,tSent,tRel,prof,net,wf,wch,health,bug,rst].forEach((t,i)=>grid.append(rise(t,i+1)));
   dv.onclick=()=>{if(DEV.on)stopDev();else startDev(grid,dv)};
   scr.append(head,page);v.append(scr);
 
@@ -675,7 +726,7 @@ function drawSettings(v){
   const update=async()=>{
     try{
       const s=await api('/api/status');cb.checked=!!s.repeater;
-      nHeard.textContent=s.rx;nSent.textContent=s.tx;nRel.textContent=s.relayed;
+      nHeard.textContent=s.rx;nSent.textContent=s.tx;nRel.textContent=s.relayed;wfill(s);
       rows(net,[['Wi-Fi network',s.ssid],['Phones connected',s.clients],['Chats stored',s.rooms],['Channel',s.ch],['Uptime',fmtUp(s.up)]]);
       rows(health,[['Firmware',s.ver],['Free memory',Math.round(s.heap/1024)+' KB',s.heap<30000],['Packets dropped (busy)',s.rxDrop,s.rxDrop>0],
         ['Failed sends',s.txFail,s.txFail>0],['Rejected packets',s.bad+s.auth],['Radio restarts',s.reinit,s.reinit>0]]);
@@ -919,6 +970,35 @@ void loadRooms() {
     if (!e) break;
     p = e + 1;
   }
+}
+
+bool validSsid(const char *s) {
+  size_t n = strlen(s);
+  if (n < 1 || n > 32) return false;
+  for (size_t i = 0; i < n; i++) {
+    uint8_t c = (uint8_t)s[i];
+    if (c < 0x20 || c == 0x7f || c == '"' || c == '\\') return false;
+  }
+  return true;
+}
+
+bool validPass(const char *s) {
+  size_t n = strlen(s);
+  if (n == 0) return true;
+  if (n < 8 || n > 63) return false;
+  for (size_t i = 0; i < n; i++) if ((uint8_t)s[i] < 0x20 || (uint8_t)s[i] > 0x7e) return false;
+  return true;
+}
+
+void loadWifi() {
+  if (!prefs.getBool("wset", false)) return;
+  String n = prefs.getString("wssid", ""), p = prefs.getString("wpass", "");
+  uint8_t c = prefs.getUChar("wch", 0);
+  if (validSsid(n.c_str())) snprintf(apSsid, sizeof apSsid, "%s", n.c_str());
+  if (validPass(p.c_str())) snprintf(wifiPass, sizeof wifiPass, "%s", p.c_str());
+  if (c >= 1 && c <= 11) wifiCh = c;
+  wifiCustom = true;
+  logEvent("Using saved Wi-Fi settings");
 }
 
 int findRoom(const char *code) {
@@ -1292,13 +1372,13 @@ void handlePoll() {
 void handleStatus() {
   int n = 0; for (int i = 0; i < MAX_ROOMS; i++) if (rooms[i].used) n++;
   char sdk[24]; strncpy(sdk, ESP.getSdkVersion(), sizeof sdk - 1); sdk[sizeof sdk - 1] = 0;
-  char out[680];
+  char out[760];
   snprintf(out, sizeof out,
-           "{\"ver\":\"%s\",\"chip\":\"%s\",\"sdk\":\"%s\",\"repeater\":%s,\"ssid\":\"%s\",\"ch\":%d,\"hops\":%d,"
+           "{\"ver\":\"%s\",\"chip\":\"%s\",\"sdk\":\"%s\",\"repeater\":%s,\"ssid\":\"%s\",\"ch\":%d,\"pw\":%s,\"wcustom\":%s,\"hops\":%d,"
            "\"clients\":%d,\"rooms\":%d,\"rx\":%lu,\"tx\":%lu,\"relayed\":%lu,"
            "\"rxDrop\":%lu,\"txFail\":%lu,\"bad\":%lu,\"auth\":%lu,\"reinit\":%lu,"
            "\"near\":%d,\"heap\":%lu,\"minHeap\":%lu,\"up\":%lu}",
-           VERSION, ESP.getChipModel(), sdk, repeaterOn ? "true" : "false", apSsid, WIFI_CHANNEL, MAX_HOPS,
+           VERSION, ESP.getChipModel(), sdk, repeaterOn ? "true" : "false", apSsid, (int)wifiCh, strlen(wifiPass) >= 8 ? "true" : "false", wifiCustom ? "true" : "false", MAX_HOPS,
            (int)WiFi.softAPgetStationNum(), n, (unsigned long)statRx, (unsigned long)statTx, (unsigned long)statRelay,
            (unsigned long)statRxDrop, (unsigned long)statTxFail, (unsigned long)statBad, (unsigned long)statAuth,
            (unsigned long)statReinit, nearCount(), (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMinFreeHeap(),
@@ -1364,6 +1444,34 @@ void handleReset() {
   restartPending = true;
   restartAt = millis() + 800;
   sendJson("{\"ok\":true}");
+}
+
+void handleWifi() {
+  if (server.method() != HTTP_POST) return fail(405, "post only");
+  if (server.arg("confirm") != String("APPLY")) return fail(400, "confirm");
+  char out[140];
+  if (server.arg("default") == "1") {
+    prefs.remove("wset"); prefs.remove("wssid"); prefs.remove("wpass"); prefs.remove("wch");
+    snprintf(out, sizeof out, "{\"ok\":true,\"ssid\":\"%s\",\"ch\":%d,\"pw\":%s}", defSsid, WIFI_CHANNEL, strlen(AP_PASSWORD) >= 8 ? "true" : "false");
+  } else {
+    String n = server.hasArg("ssid") ? server.arg("ssid") : String(apSsid);
+    n.trim();
+    String p = server.hasArg("pass") ? server.arg("pass") : String(wifiPass);
+    long c = server.hasArg("ch") ? server.arg("ch").toInt() : (long)wifiCh;
+    if (!validSsid(n.c_str())) return fail(400, "bad ssid");
+    if (!validPass(p.c_str())) return fail(400, "bad pass");
+    if (c < 1 || c > 11) return fail(400, "bad channel");
+    bool ok = prefs.putString("wssid", n) > 0 && prefs.putUChar("wch", (uint8_t)c) > 0;
+    if (p.length()) ok = ok && prefs.putString("wpass", p) > 0; else prefs.putString("wpass", "");
+    ok = ok && prefs.putBool("wset", true) > 0;
+    if (!ok) { logEvent("Could not save Wi-Fi settings"); return fail(500, "storage"); }
+    snprintf(out, sizeof out, "{\"ok\":true,\"ssid\":\"%s\",\"ch\":%d,\"pw\":%s}", n.c_str(), (int)c, p.length() ? "true" : "false");
+  }
+  logEvent("Wi-Fi settings changed, restarting");
+  devStop();
+  restartPending = true;
+  restartAt = millis() + 800;
+  sendJson(out);
 }
 
 void outHex(Out &o, const uint8_t *d, size_t n) {
@@ -1603,11 +1711,14 @@ void setup() {
 
   WiFi.mode(WIFI_AP_STA);
   uint8_t mac[6]; WiFi.macAddress(mac);
-  snprintf(apSsid, sizeof apSsid, "%s%02X%02X", AP_SSID_PREFIX, mac[4], mac[5]);
+  snprintf(defSsid, sizeof defSsid, "%s%02X%02X", AP_SSID_PREFIX, mac[4], mac[5]);
+  snprintf(apSsid, sizeof apSsid, "%s", defSsid);
+  snprintf(wifiPass, sizeof wifiPass, "%s", AP_PASSWORD);
+  loadWifi();
   const char *pw = NULL;
-  if (strlen(AP_PASSWORD) >= 8) pw = AP_PASSWORD;
-  else if (strlen(AP_PASSWORD) > 0) logEvent("AP_PASSWORD under 8 characters, network left open");
-  if (!WiFi.softAP(apSsid, pw, WIFI_CHANNEL, 0, 8)) {
+  if (strlen(wifiPass) >= 8) pw = wifiPass;
+  else if (strlen(wifiPass) > 0) logEvent("Wi-Fi password under 8 characters, network left open");
+  if (!WiFi.softAP(apSsid, pw, wifiCh, 0, 8)) {
     logEvent("Wi-Fi hotspot failed to start, rebooting");
     delay(2000); ESP.restart();
   }
@@ -1631,6 +1742,7 @@ void setup() {
   server.on("/api/repeater", []() { routed(handleRepeater, 0); });
   server.on("/api/leave", []() { routed(handleLeave, 0); });
   server.on("/api/reset", []() { routed(handleReset, 0); });
+  server.on("/api/wifi", []() { routed(handleWifi, 0); });
   server.on("/api/dev", []() { routed(handleDev, 0); });
   server.on("/api/console", []() { routed(handleConsole, 2); });
   server.on("/api/perf", []() { routed(handlePerf, 1); });
